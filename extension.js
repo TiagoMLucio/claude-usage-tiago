@@ -74,11 +74,18 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._usageState = 'pending'; // pending | ok | ratelimited | error
         this._lastUsageAttempt = 0;
         this._lastUsageOk = 0;
+        this._lastTranscriptRefresh = 0;
         this._plan = '';
         this._destroyed = false;
 
         this._settingsChangedId = this._settings.connect('changed',
             (_s, key) => this._onSettingChanged(key));
+        // The dropdown (graphs, per-model rows, transcript parsing) is rebuilt
+        // only while it's open — see _updateUi / _onMenuOpen.
+        this._openStateId = this.menu.connect('open-state-changed', (_m, open) => {
+            if (open)
+                this._onMenuOpen();
+        });
 
         this._applyIcon();
         this._applyPanelVisibility();
@@ -172,15 +179,37 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     /* --- refresh orchestration --- */
 
-    _refresh(force = false) {
-        this._refreshTranscripts().then(() => this._updateUi());
+    // The panel text only needs transcripts when it shows cost.
+    _panelNeedsCost() {
+        const f = this._settings.get_string(K.PANEL_FORMAT);
+        return f === 'cost' || f === 'five-week-cost';
+    }
 
-        const elapsed = Date.now() / 1000 - this._lastUsageAttempt;
-        const due = this._settings.get_int(K.USAGE_REFRESH_SECONDS);
-        if (force || this._lastUsageAttempt === 0 || elapsed >= due)
+    // Periodic tick. Keeps usage current; parses transcripts only when the menu
+    // is open or the panel shows cost (and then no faster than the usage
+    // cadence). While the menu is closed and idle this does almost nothing.
+    _refresh(force = false) {
+        const now = Date.now() / 1000;
+        const cadence = this._settings.get_int(K.USAGE_REFRESH_SECONDS);
+
+        if (force || this._lastUsageAttempt === 0 || now - this._lastUsageAttempt >= cadence)
             this._fetchUsage();
 
-        this._updateUi();
+        const transcriptsDue = this.menu.isOpen ||
+            (this._panelNeedsCost() && now - this._lastTranscriptRefresh >= cadence);
+        if (force || transcriptsDue) {
+            this._lastTranscriptRefresh = now;
+            this._refreshTranscripts().then(() => this._updateUi());
+        } else {
+            this._updateUi();
+        }
+    }
+
+    // Pull fresh data when the user opens the menu, then rebuild it.
+    _onMenuOpen() {
+        this._lastTranscriptRefresh = Date.now() / 1000;
+        this._updateUi(); // show immediately with whatever is cached
+        this._refreshTranscripts().then(() => this._updateUi());
     }
 
     async _refreshTranscripts() {
@@ -335,8 +364,13 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     _updateUi() {
         if (this._destroyed)
             return;
-        this._label.text = this._panelText();
-        this._rebuildMenu();
+        const text = this._panelText();
+        if (this._label.text !== text) // avoid needless panel relayout
+            this._label.text = text;
+        // Rebuilding the menu allocates many actors (incl. Cairo graphs); only
+        // do it while the menu is actually visible.
+        if (this.menu.isOpen)
+            this._rebuildMenu();
     }
 
     /* --- dropdown blocks (rendered in the configured order) --- */
@@ -568,6 +602,10 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         if (this._settingsChangedId) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
+        }
+        if (this._openStateId) {
+            this.menu.disconnect(this._openStateId);
+            this._openStateId = 0;
         }
         if (this._timeoutId) {
             GLib.source_remove(this._timeoutId);
