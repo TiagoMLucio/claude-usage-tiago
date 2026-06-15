@@ -1,0 +1,600 @@
+/* Claude Code Usage — GNOME Shell 42 extension (legacy, non-ESM).
+ *
+ * Top bar: optional Claude icon (recolorable) + configurable text. Dropdown:
+ * subscription utilization bars, today's tokens per model, and optional Cairo
+ * graphs (daily cost, utilization trend, model share, 5h burn-down). Every
+ * visible element is toggleable from preferences.
+ *
+ * This file is just the indicator UI + orchestration; data sources live in
+ * lib/ (usage.js, transcripts.js, history.js, graphs.js, pricing/format,
+ * settings.js). */
+
+const { GLib, Gio, St, Clutter, GObject, Pango } = imports.gi;
+const ByteArray = imports.byteArray;
+const Main = imports.ui.main;
+const PanelMenu = imports.ui.panelMenu;
+const PopupMenu = imports.ui.popupMenu;
+const ExtensionUtils = imports.misc.extensionUtils;
+
+const Me = ExtensionUtils.getCurrentExtension();
+const Settings = Me.imports.lib.settings;
+const Pricing = Me.imports.lib.pricing;
+const Format = Me.imports.lib.format;
+const Graphs = Me.imports.lib.graphs;
+const { UsageClient } = Me.imports.lib.usage;
+const { TranscriptReader } = Me.imports.lib.transcripts;
+const { UtilHistory } = Me.imports.lib.history;
+
+const K = Settings.KEYS;
+const ICON_DIR = GLib.build_filenamev([GLib.get_user_state_dir(), 'claude-usage', 'icons']);
+const ICON_BASE_FILL = '#eeeeec'; // fill in claude.svg we recolor
+
+// Theme-neutral "dim" text: smaller font via CSS, faded via actor opacity.
+function dim(label) {
+    label.add_style_class_name('claude-dim');
+    label.opacity = 165;
+    return label;
+}
+
+const Indicator = GObject.registerClass(
+class ClaudeUsageIndicator extends PanelMenu.Button {
+    _init(settings) {
+        super._init(0.0, 'Claude Code Usage');
+        this._settings = settings;
+
+        // --- panel button ---
+        this._box = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
+        this._icon = new St.Icon({
+            icon_size: 16,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._label = new St.Label({
+            text: '…',
+            y_align: Clutter.ActorAlign.CENTER,
+            style: 'margin-left: 5px;',
+        });
+        this._label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        this._box.add_child(this._icon);
+        this._box.add_child(this._label);
+        this.add_child(this._box);
+
+        // --- data sources ---
+        this._usageClient = new UsageClient();
+        this._history = new UtilHistory();
+        this._history.load();
+        this._transcripts = new TranscriptReader(
+            () => Pricing.parsePricing(this._settings.get_string(K.PRICING)),
+            // Parse enough days for the cost graph and the selected summary period.
+            () => Math.max(this._settings.get_int(K.COST_HISTORY_DAYS),
+                Format.periodLookbackDays(this._settings.get_string(K.PERIOD))));
+
+        // --- state ---
+        this._timeoutId = 0;
+        this._usage = null;
+        this._usageState = 'pending'; // pending | ok | ratelimited | error
+        this._lastUsageAttempt = 0;
+        this._lastUsageOk = 0;
+        this._plan = '';
+        this._destroyed = false;
+
+        this._settingsChangedId = this._settings.connect('changed',
+            (_s, key) => this._onSettingChanged(key));
+
+        this._applyIcon();
+        this._applyPanelVisibility();
+        this._refresh();
+        this._startTimer();
+    }
+
+    /* --- icon --- */
+
+    _iconColor() {
+        switch (this._settings.get_string(K.ICON_COLOR)) {
+        case 'orange': return '#D97757';
+        case 'accent': return this._settings.get_string(K.ACCENT_COLOR) || '#D97757';
+        case 'white':
+        default:        return '#ffffff';
+        }
+    }
+
+    // Recolor claude.svg to the chosen color, write it under the state dir, and
+    // point the panel icon at it. The filename embeds the color so St doesn't
+    // serve a stale cached texture when the color changes.
+    _applyIcon() {
+        const color = this._iconColor();
+        const slug = color.replace(/[^0-9a-zA-Z]/g, '');
+        const outPath = GLib.build_filenamev([ICON_DIR, `claude-${slug}.svg`]);
+        try {
+            if (!Gio.File.new_for_path(outPath).query_exists(null)) {
+                try {
+                    Gio.File.new_for_path(ICON_DIR).make_directory_with_parents(null);
+                } catch (e) {
+                    // directory already exists — fine
+                }
+                const [, bytes] = GLib.file_get_contents(`${Me.path}/claude.svg`);
+                const svg = ByteArray.toString(bytes).split(ICON_BASE_FILL).join(color);
+                GLib.file_set_contents(outPath, svg);
+            }
+            this._icon.gicon = Gio.icon_new_for_string(outPath);
+        } catch (e) {
+            logError(e, 'claude-usage: icon recolor failed');
+            this._icon.gicon = Gio.icon_new_for_string(`${Me.path}/claude.svg`);
+        }
+    }
+
+    /* --- settings reactions --- */
+
+    _startTimer() {
+        if (this._timeoutId)
+            GLib.source_remove(this._timeoutId);
+        const seconds = this._settings.get_int(K.REFRESH_SECONDS);
+        this._timeoutId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, seconds, () => {
+                this._refresh();
+                return GLib.SOURCE_CONTINUE;
+            });
+    }
+
+    _onSettingChanged(key) {
+        switch (key) {
+        case K.REFRESH_SECONDS:
+            this._startTimer();
+            break;
+        case K.PRICING:
+            // Cost is baked into the cache; force a re-parse.
+            this._transcripts.invalidate();
+            this._refreshTranscripts().then(() => this._updateUi());
+            return;
+        case K.COST_HISTORY_DAYS:
+        case K.PERIOD:
+            // Grow-only cache: shrinking is instant, growing re-parses only the
+            // extra days. No full invalidate.
+            this._refreshTranscripts().then(() => this._updateUi());
+            return;
+        case K.ICON_COLOR:
+            this._applyIcon();
+            return;
+        case K.ACCENT_COLOR:
+            this._applyIcon(); // matters when icon-color = accent
+            break;
+        case K.SHOW_ICON:
+        case K.SHOW_PANEL_TEXT:
+            this._applyPanelVisibility();
+            break;
+        }
+        this._updateUi();
+    }
+
+    _applyPanelVisibility() {
+        this._icon.visible = this._settings.get_boolean(K.SHOW_ICON);
+        this._label.visible = this._settings.get_boolean(K.SHOW_PANEL_TEXT);
+    }
+
+    /* --- refresh orchestration --- */
+
+    _refresh(force = false) {
+        this._refreshTranscripts().then(() => this._updateUi());
+
+        const elapsed = Date.now() / 1000 - this._lastUsageAttempt;
+        const due = this._settings.get_int(K.USAGE_REFRESH_SECONDS);
+        if (force || this._lastUsageAttempt === 0 || elapsed >= due)
+            this._fetchUsage();
+
+        this._updateUi();
+    }
+
+    async _refreshTranscripts() {
+        try {
+            await this._transcripts.refresh();
+        } catch (e) {
+            logError(e, 'claude-usage: transcript refresh failed');
+        }
+    }
+
+    _fetchUsage() {
+        this._lastUsageAttempt = Date.now() / 1000;
+        this._usageClient.fetch().then(({ state, data, plan }) => {
+            if (this._destroyed)
+                return;
+            if (plan)
+                this._plan = plan;
+            this._usageState = state;
+            if (state === 'ok' && data) {
+                this._usage = data;
+                this._lastUsageOk = Date.now() / 1000;
+                this._history.record(data);
+            }
+            this._updateUi();
+        });
+    }
+
+    /* --- shared helpers --- */
+
+    _accent() {
+        return this._settings.get_string(K.ACCENT_COLOR) || '#D97757';
+    }
+
+    _accentRgb() {
+        return Format.parseColor(this._accent());
+    }
+
+    _barWidth() {
+        return this._settings.get_int(K.BAR_WIDTH);
+    }
+
+    _statusGlyph() {
+        return this._usageState === 'error'
+            ? this._settings.get_string(K.STATUS_ERROR)
+            : this._settings.get_string(K.STATUS_LOADING);
+    }
+
+    /* --- UI building blocks --- */
+
+    _row(opts = {}) {
+        const item = new PopupMenu.PopupBaseMenuItem({
+            reactive: true, activate: false, hover: false, can_focus: false,
+            ...opts,
+        });
+        this.menu.addMenuItem(item);
+        return item;
+    }
+
+    _graphRow(widget) {
+        const item = this._row();
+        item.add_child(widget);
+        return item;
+    }
+
+    _twoColRow(leftText, rightText, { leftClass, rightClass } = {}) {
+        const item = this._row();
+        const left = new St.Label({
+            text: leftText, x_expand: true, y_align: Clutter.ActorAlign.CENTER,
+        });
+        if (leftClass)
+            left.add_style_class_name(leftClass);
+        const right = new St.Label({ text: rightText, y_align: Clutter.ActorAlign.CENTER });
+        if (rightClass)
+            right.add_style_class_name(rightClass);
+        else
+            dim(right);
+        item.add_child(left);
+        item.add_child(right);
+        return item;
+    }
+
+    _barRow(title, subtitle, pct) {
+        const item = this._row();
+        const vbox = new St.BoxLayout({ vertical: true, x_expand: true });
+        const width = this._barWidth();
+
+        const hbox = new St.BoxLayout({ x_expand: true });
+        hbox.add_child(new St.Label({ text: title }));
+        if (subtitle) {
+            const sub = new St.Label({ text: `  ${subtitle}`, y_align: Clutter.ActorAlign.END });
+            dim(sub);
+            hbox.add_child(sub);
+        }
+        hbox.add_child(new St.Widget({ x_expand: true }));
+        const pctLabel = new St.Label({ text: pct === null ? '–' : `${Math.round(pct)}%` });
+        pctLabel.add_style_class_name('claude-pct');
+        hbox.add_child(pctLabel);
+        vbox.add_child(hbox);
+
+        const track = new St.Widget({
+            style_class: 'claude-bar-track', style: `width: ${width}px;`,
+        });
+        if (pct !== null && pct > 0) {
+            const fillW = Math.max(3, Math.round(width * pct / 100));
+            track.add_child(new St.Widget({
+                style_class: 'claude-bar-fill',
+                style: `width: ${fillW}px; background-color: ${this._accent()};`,
+            }));
+        }
+        vbox.add_child(track);
+        item.add_child(vbox);
+        return item;
+    }
+
+    _separator() {
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+    }
+
+    /* --- panel text --- */
+
+    _panelText() {
+        const u = this._usage;
+        const five = u ? Format.pctOf(u.five_hour) : null;
+        const week = u ? Format.pctOf(u.seven_day) : null;
+        const fStr = five === null ? '–' : `${Math.round(five)}%`;
+        const wStr = week === null ? '–' : `${Math.round(week)}%`;
+
+        const [, total] = this._transcripts.aggregateDay();
+        const costStr = `$${total.cost.toFixed(2)}`;
+
+        const haveUsage = five !== null || week !== null;
+        const ph = this._statusGlyph();
+        const format = this._settings.get_string(K.PANEL_FORMAT);
+
+        switch (format) {
+        case 'cost':
+            return costStr;
+        case 'five':
+            return haveUsage ? fStr : ph;
+        case 'week':
+            return haveUsage ? wStr : ph;
+        case 'five-week-cost':
+            return haveUsage ? `${fStr} · ${wStr} · ${costStr}` : `${ph} · ${costStr}`;
+        case 'five-week':
+        default:
+            return haveUsage ? `${fStr} · ${wStr}` : ph;
+        }
+    }
+
+    /* --- UI --- */
+
+    _updateUi() {
+        if (this._destroyed)
+            return;
+        this._label.text = this._panelText();
+        this._rebuildMenu();
+    }
+
+    /* --- dropdown blocks (rendered in the configured order) --- */
+
+    _blockWillRender(id) {
+        const s = this._settings;
+        switch (id) {
+        case 'usage': return s.get_boolean(K.SHOW_USAGE_SECTION);
+        case 'today': return s.get_boolean(K.SHOW_TODAY_SECTION);
+        case 'projects':
+            return s.get_boolean(K.SHOW_PROJECTS_SECTION) &&
+                this._transcripts.aggregateProjectsPeriod(this._periodStart()).length > 0;
+        case 'graph-cost': return s.get_boolean(K.SHOW_GRAPH_COST);
+        case 'graph-util': return s.get_boolean(K.SHOW_GRAPH_UTIL);
+        case 'graph-models': return s.get_boolean(K.SHOW_GRAPH_MODELS);
+        case 'graph-burndown':
+            return s.get_boolean(K.SHOW_GRAPH_BURNDOWN) &&
+                !!(this._usage && this._usage.five_hour);
+        }
+        return false;
+    }
+
+    _renderBlock(id) {
+        switch (id) {
+        case 'usage': this._renderUsage(); break;
+        case 'today': this._renderSummary(); break;
+        case 'projects': this._renderProjects(); break;
+        case 'graph-cost': this._renderGraphCost(); break;
+        case 'graph-util': this._renderGraphUtil(); break;
+        case 'graph-models': this._renderGraphModels(); break;
+        case 'graph-burndown': this._renderGraphBurndown(); break;
+        }
+    }
+
+    _renderUsage() {
+        const u = this._usage;
+        if (u) {
+            this._barRow('Session (5h)',
+                `resets ${Format.fmtReset(u.five_hour?.resets_at)}`, Format.pctOf(u.five_hour));
+            this._barRow('Week',
+                `resets ${Format.fmtReset(u.seven_day?.resets_at)}`, Format.pctOf(u.seven_day));
+            if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS)) {
+                for (const [key, name] of [['seven_day_opus', 'Week · Opus'],
+                                           ['seven_day_sonnet', 'Week · Sonnet']]) {
+                    const pct = Format.pctOf(u[key]);
+                    if (pct !== null)
+                        this._barRow(name, '', pct);
+                }
+            }
+        } else {
+            this._twoColRow({
+                ratelimited: 'Usage API rate-limited',
+                error: 'Usage unavailable',
+                pending: 'Fetching usage…',
+                ok: 'Fetching usage…',
+            }[this._usageState], '');
+        }
+    }
+
+    /* --- selectable period (day/week/month/year) --- */
+
+    _period() {
+        return this._settings.get_string(K.PERIOD);
+    }
+
+    _periodStart() {
+        return Format.periodStartMs(this._period());
+    }
+
+    // Any block that the period affects (used to decide if the header selector
+    // is worth showing).
+    _periodInUse() {
+        const s = this._settings;
+        return s.get_boolean(K.SHOW_TODAY_SECTION) ||
+            s.get_boolean(K.SHOW_PROJECTS_SECTION) ||
+            s.get_boolean(K.SHOW_GRAPH_MODELS);
+    }
+
+    // Single header button showing the current period letter (D/W/M/Y).
+    // Left-click advances to the next period, right-click goes back; both wrap.
+    _periodButton() {
+        const order = ['day', 'week', 'month', 'year'];
+        const labels = { day: 'D', week: 'W', month: 'M', year: 'Y' };
+        const cur = this._period();
+        const btn = new St.Button({
+            label: labels[cur] || 'D',
+            style_class: 'claude-seg claude-seg-active',
+            style: 'margin-left: 8px;',
+            y_align: Clutter.ActorAlign.CENTER,
+            button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE,
+        });
+        btn.connect('clicked', (_b, clickedButton) => {
+            const i = Math.max(0, order.indexOf(this._period()));
+            const delta = clickedButton === 3 ? -1 : 1; // right-click = back
+            this._settings.set_string(K.PERIOD, order[(i + delta + order.length) % order.length]);
+        });
+        return btn;
+    }
+
+    _renderSummary() {
+        const s = this._settings;
+        const [perModel, total] = this._transcripts.aggregatePeriod(this._periodStart());
+        this._twoColRow(Format.periodLabel(this._period()), `${total.messages} messages`,
+            { leftClass: 'claude-header' });
+
+        if (total.messages === 0) {
+            this._twoColRow('', 'no activity yet');
+            return;
+        }
+        if (s.get_boolean(K.SHOW_MODEL_BREAKDOWN)) {
+            const models = Object.entries(perModel).sort((a, b) => b[1].output - a[1].output);
+            for (const [model, t] of models) {
+                this._twoColRow(`  ${Format.prettyModel(model)}`,
+                    `out ${Format.fmtTokens(t.output)} · ${t.messages} msgs`);
+            }
+        }
+        if (s.get_boolean(K.SHOW_TOKEN_DETAILS)) {
+            this._twoColRow('', `in ${Format.fmtTokens(total.input)} · cache ` +
+                `${Format.fmtTokens(total.cacheRead)}r / ${Format.fmtTokens(total.cacheWrite)}w`);
+        }
+        if (s.get_boolean(K.SHOW_COST))
+            this._twoColRow('', `≈ $${total.cost.toFixed(2)} at API prices`);
+    }
+
+    _renderProjects() {
+        const projects = this._transcripts.aggregateProjectsPeriod(this._periodStart());
+        const max = this._settings.get_int(K.PROJECTS_MAX);
+        this._twoColRow('Projects', `${projects.length}`, { leftClass: 'claude-header' });
+        for (const { project, total } of projects.slice(0, max)) {
+            this._twoColRow(`  ${Format.prettyProject(project)}`,
+                `out ${Format.fmtTokens(total.output)} · ${total.messages} msgs`);
+        }
+    }
+
+    _renderGraphCost() {
+        const days = this._settings.get_int(K.COST_HISTORY_DAYS);
+        const metric = this._settings.get_string(K.TOKEN_METRIC);
+        this._graphRow(Graphs.tokensGraph({
+            values: this._transcripts.dailyTokens(days, metric),
+            color: this._accentRgb(), width: this._barWidth(), labeled: true,
+        }));
+    }
+
+    _renderGraphUtil() {
+        const days = this._settings.get_int(K.UTIL_TREND_DAYS);
+        this._graphRow(Graphs.utilGraph({
+            samples: this._history.samples(days), days,
+            color: this._accentRgb(), width: this._barWidth(), labeled: true,
+        }));
+    }
+
+    _renderGraphModels() {
+        const [perModel] = this._transcripts.aggregatePeriod(this._periodStart());
+        const segments = Object.entries(perModel)
+            .map(([model, t]) => ({ label: Format.prettyModel(model), value: t.output }))
+            .filter(seg => seg.value > 0)
+            .sort((a, b) => b.value - a.value);
+        this._graphRow(Graphs.modelGraph({
+            segments, accent: this._accentRgb(), width: this._barWidth(), labeled: true,
+        }));
+    }
+
+    _renderGraphBurndown() {
+        const u = this._usage;
+        this._graphRow(Graphs.burndownGraph({
+            five: Format.pctOf(u.five_hour), resetsAt: u.five_hour.resets_at,
+            color: this._accentRgb(), width: this._barWidth(), labeled: false,
+        }));
+    }
+
+    _rebuildMenu() {
+        this.menu.removeAll();
+        const s = this._settings;
+
+        // Header: title + last-updated + refresh + settings buttons.
+        const header = this._row();
+        const title = new St.Label({
+            text: this._plan ? `Claude · ${this._plan}` : 'Claude',
+            x_expand: true, y_align: Clutter.ActorAlign.CENTER,
+        });
+        title.add_style_class_name('claude-header');
+        header.add_child(title);
+        const updatedParts = [];
+        if (this._lastUsageOk) {
+            const t = GLib.DateTime.new_from_unix_local(Math.floor(this._lastUsageOk));
+            updatedParts.push(t.format('%H:%M'));
+        }
+        if (this._usageState === 'ratelimited')
+            updatedParts.push(s.get_string(K.STATUS_RATELIMITED));
+        const updated = new St.Label({ text: updatedParts.join(' '), y_align: Clutter.ActorAlign.CENTER });
+        dim(updated);
+        header.add_child(updated);
+
+        const iconBtn = name => {
+            const btn = new St.Button({
+                style_class: 'claude-refresh-button',
+                child: new St.Icon({ icon_name: name, icon_size: 14 }),
+            });
+            header.add_child(btn);
+            return btn;
+        };
+        // Order: refresh · period · settings.
+        iconBtn('view-refresh-symbolic').connect('clicked', () => this._refresh(true));
+        if (this._periodInUse())
+            header.add_child(this._periodButton());
+        iconBtn('emblem-system-symbolic').connect('clicked', () => {
+            this.menu.close();
+            ExtensionUtils.openPrefs();
+        });
+
+        // Ordered blocks, with separators between adjacent rendered blocks
+        // (but not between two consecutive graphs).
+        const kindOf = Object.fromEntries(Settings.BLOCKS.map(b => [b.id, b.kind]));
+        const order = Settings.normalizeOrder(s.get_strv(K.SECTION_ORDER));
+        let prevKind = null;
+        for (const id of order) {
+            if (!this._blockWillRender(id))
+                continue;
+            const kind = kindOf[id];
+            if (prevKind !== null && !(prevKind === 'graph' && kind === 'graph'))
+                this._separator();
+            this._renderBlock(id);
+            prevKind = kind;
+        }
+    }
+
+    destroy() {
+        this._destroyed = true;
+        if (this._settingsChangedId) {
+            this._settings.disconnect(this._settingsChangedId);
+            this._settingsChangedId = 0;
+        }
+        if (this._timeoutId) {
+            GLib.source_remove(this._timeoutId);
+            this._timeoutId = 0;
+        }
+        if (this._usageClient) {
+            this._usageClient.destroy();
+            this._usageClient = null;
+        }
+        super.destroy();
+    }
+});
+
+class Extension {
+    enable() {
+        this._settings = Settings.getSettings();
+        this._indicator = new Indicator(this._settings);
+        Main.panel.addToStatusArea('claude-usage', this._indicator);
+    }
+
+    disable() {
+        this._indicator.destroy();
+        this._indicator = null;
+        this._settings = null;
+    }
+}
+
+function init() {
+    return new Extension();
+}

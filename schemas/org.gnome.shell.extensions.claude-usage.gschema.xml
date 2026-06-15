@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.claude-usage"
+          path="/org/gnome/shell/extensions/claude-usage/">
+
+    <!-- Refresh cadence -->
+    <key name="refresh-seconds" type="i">
+      <default>60</default>
+      <range min="15" max="3600"/>
+      <summary>Transcript refresh interval (seconds)</summary>
+      <description>How often local ~/.claude transcripts are re-parsed for tokens and cost.</description>
+    </key>
+    <key name="usage-refresh-seconds" type="i">
+      <default>300</default>
+      <range min="60" max="3600"/>
+      <summary>Usage API refresh interval (seconds)</summary>
+      <description>How often the subscription usage endpoint is polled. It rate-limits aggressive polling, so values below ~120s are not recommended.</description>
+    </key>
+
+    <!-- Panel (top bar) -->
+    <key name="show-icon" type="b">
+      <default>true</default>
+      <summary>Show the Claude icon in the panel</summary>
+    </key>
+    <key name="icon-color" type="s">
+      <choices>
+        <choice value="white"/>
+        <choice value="orange"/>
+        <choice value="accent"/>
+      </choices>
+      <default>'white'</default>
+      <summary>Panel icon color</summary>
+      <description>white: monochrome white; orange: original brand terracotta; accent: follow the accent-color setting.</description>
+    </key>
+    <key name="show-panel-text" type="b">
+      <default>true</default>
+      <summary>Show text next to the panel icon</summary>
+    </key>
+    <key name="panel-format" type="s">
+      <choices>
+        <choice value="five-week"/>
+        <choice value="five"/>
+        <choice value="week"/>
+        <choice value="cost"/>
+        <choice value="five-week-cost"/>
+      </choices>
+      <default>'five-week'</default>
+      <summary>What the panel text shows</summary>
+      <description>five-week: 5h% and week%; five: 5h% only; week: week% only; cost: today's cost; five-week-cost: all three.</description>
+    </key>
+
+    <!-- Status glyphs (panel placeholders + menu header) -->
+    <key name="status-loading" type="s">
+      <default>'⟳'</default>
+      <summary>Text shown while waiting for usage data</summary>
+    </key>
+    <key name="status-error" type="s">
+      <default>'!'</default>
+      <summary>Text shown when usage data can't be fetched</summary>
+    </key>
+    <key name="status-throttled" type="s">
+      <default>'⧖'</default>
+      <summary>Text shown in the menu header when the usage API is rate-limited</summary>
+    </key>
+
+    <!-- Dropdown sections -->
+    <key name="show-usage-section" type="b">
+      <default>true</default>
+      <summary>Show subscription usage bars (5h / week)</summary>
+    </key>
+    <key name="show-model-usage-bars" type="b">
+      <default>false</default>
+      <summary>Show per-model weekly usage bars (Opus / Sonnet)</summary>
+    </key>
+    <key name="show-today-section" type="b">
+      <default>true</default>
+      <summary>Show today's tokens section</summary>
+    </key>
+    <key name="show-model-breakdown" type="b">
+      <default>true</default>
+      <summary>Show per-model token breakdown for today</summary>
+    </key>
+    <key name="show-token-details" type="b">
+      <default>true</default>
+      <summary>Show input / cache token totals</summary>
+    </key>
+    <key name="show-cost" type="b">
+      <default>true</default>
+      <summary>Show estimated API-equivalent cost</summary>
+    </key>
+    <key name="show-projects-section" type="b">
+      <default>false</default>
+      <summary>Show tokens grouped by project for the selected period</summary>
+    </key>
+    <key name="projects-max" type="i">
+      <default>5</default>
+      <range min="1" max="50"/>
+      <summary>Maximum number of projects listed</summary>
+    </key>
+    <key name="period" type="s">
+      <choices>
+        <choice value="day"/>
+        <choice value="week"/>
+        <choice value="month"/>
+        <choice value="year"/>
+      </choices>
+      <default>'day'</default>
+      <summary>Time period for the summary, model-share graph and projects</summary>
+      <description>Switched from the dropdown via the summary block's arrows.</description>
+    </key>
+
+    <!-- Graphs -->
+    <key name="show-graph-cost" type="b">
+      <default>true</default>
+      <summary>Show the daily token usage graph</summary>
+    </key>
+    <key name="cost-history-days" type="i">
+      <default>14</default>
+      <range min="2" max="90"/>
+      <summary>Days of token history to show</summary>
+    </key>
+    <key name="token-metric" type="s">
+      <choices>
+        <choice value="all"/>
+        <choice value="no-cache"/>
+        <choice value="output"/>
+      </choices>
+      <default>'no-cache'</default>
+      <summary>Which tokens the daily graph counts</summary>
+      <description>all: input+output+cache; no-cache: input+output; output: output only.</description>
+    </key>
+    <key name="show-graph-util" type="b">
+      <default>true</default>
+      <summary>Show the utilization trend graph</summary>
+    </key>
+    <key name="util-trend-days" type="i">
+      <default>7</default>
+      <range min="1" max="365"/>
+      <summary>Days of utilization trend to display (all samples are retained on disk)</summary>
+    </key>
+    <key name="show-graph-models" type="b">
+      <default>true</default>
+      <summary>Show the per-model token-share graph</summary>
+    </key>
+    <key name="show-graph-burndown" type="b">
+      <default>true</default>
+      <summary>Show the current 5h window burn-down graph</summary>
+    </key>
+
+    <!-- Order of dropdown blocks (unknown ids ignored, missing ones appended) -->
+    <key name="section-order" type="as">
+      <default>['usage','today','projects','graph-cost','graph-util','graph-models','graph-burndown']</default>
+      <summary>Order in which dropdown blocks are shown</summary>
+    </key>
+
+    <!-- Appearance -->
+    <key name="bar-width" type="i">
+      <default>300</default>
+      <range min="80" max="600"/>
+      <summary>Progress bar / graph width (px)</summary>
+    </key>
+    <key name="accent-color" type="s">
+      <default>'#D97757'</default>
+      <summary>Accent color for bars and graphs</summary>
+      <description>Any CSS color string, e.g. #D97757 or rgb(217,119,87).</description>
+    </key>
+
+    <!-- Pricing (edited via per-model rows in prefs; stored as JSON) -->
+    <key name="pricing" type="s">
+      <default>''</default>
+      <summary>Custom pricing override (JSON)</summary>
+      <description>JSON array of [model-substring, input $/MTok, output $/MTok]. Empty string uses the built-in defaults.</description>
+    </key>
+
+  </schema>
+</schemalist>

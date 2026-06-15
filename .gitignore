@@ -1,0 +1,7 @@
+# Build artifact — regenerate with: glib-compile-schemas schemas/
+schemas/gschemas.compiled
+
+# OS / editor junk
+.DS_Store
+*~
+*.swp

@@ -1,0 +1,60 @@
+/* No hardcoded text colors — labels inherit the theme color and "dim" text
+ * is done with actor opacity in extension.js, so it works on light and dark
+ * popup themes alike. */
+
+.claude-header {
+    font-weight: bold;
+}
+
+.claude-pct {
+    font-weight: bold;
+}
+
+.claude-dim {
+    font-size: 0.92em;
+}
+
+.claude-bar-track {
+    background-color: rgba(128, 128, 128, 0.25);
+    border-radius: 3px;
+    height: 6px;
+    margin-top: 6px;
+    margin-bottom: 2px;
+}
+
+/* Fallback only — the fill color is set inline from the accent-color setting. */
+.claude-bar-fill {
+    background-color: #D97757;
+    border-radius: 3px;
+    height: 6px;
+}
+
+.claude-refresh-button {
+    padding: 4px 6px;
+    margin-left: 8px;
+    border-radius: 6px;
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+.claude-refresh-button:hover {
+    background-color: rgba(128, 128, 128, 0.32);
+}
+
+/* Segmented day/week/month/year period selector. */
+.claude-segment {
+    spacing: 2px;
+}
+
+.claude-seg {
+    padding: 2px 9px;
+    border-radius: 6px;
+}
+
+.claude-seg:hover {
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+.claude-seg-active {
+    background-color: rgba(128, 128, 128, 0.30);
+    font-weight: bold;
+}
