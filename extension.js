@@ -367,9 +367,10 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         const text = this._panelText();
         if (this._label.text !== text) // avoid needless panel relayout
             this._label.text = text;
-        // Rebuilding the menu allocates many actors (incl. Cairo graphs); only
-        // do it while the menu is actually visible.
-        if (this.menu.isOpen)
+        // Rebuilding allocates many actors (incl. Cairo graphs), so on the idle
+        // timer we skip it. But the menu must never be left empty — GNOME won't
+        // open an empty PopupMenu — so (re)build when open OR currently empty.
+        if (this.menu.isOpen || this.menu.isEmpty())
             this._rebuildMenu();
     }
 

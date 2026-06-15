@@ -4,5 +4,5 @@
   "description": "Shows Claude subscription rate-limit utilization plus today's Claude Code token usage and estimated API-equivalent cost, parsed from ~/.claude transcripts. Configurable via preferences.",
   "shell-version": ["42"],
   "settings-schema": "org.gnome.shell.extensions.claude-usage",
-  "version": 10
+  "version": 11
 }
