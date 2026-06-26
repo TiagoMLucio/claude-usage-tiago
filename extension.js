@@ -549,10 +549,17 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     _renderGraphBurndown() {
         const u = this._usage;
+        const color = this._accentRgb(), width = this._barWidth();
         this._graphRow(Graphs.burndownGraph({
-            five: Format.pctOf(u.five_hour), resetsAt: u.five_hour.resets_at,
-            color: this._accentRgb(), width: this._barWidth(), labeled: false,
+            pct: Format.pctOf(u.five_hour), resetsAt: u.five_hour.resets_at,
+            windowMs: 5 * 3600 * 1000, title: '5h', color, width,
         }));
+        if (u.seven_day) {
+            this._graphRow(Graphs.burndownGraph({
+                pct: Format.pctOf(u.seven_day), resetsAt: u.seven_day.resets_at,
+                windowMs: 7 * 24 * 3600 * 1000, title: 'Week', color, width,
+            }));
+        }
     }
 
     _rebuildMenu() {
