@@ -83,6 +83,18 @@ function comboRow(settings, key, title, choices) {
     return row;
 }
 
+// Combo bound to an integer setting via a list of values + a label function.
+function intComboRow(settings, key, title, values, labelFn, subtitle) {
+    const model = new Gtk.StringList();
+    for (const v of values)
+        model.append(labelFn(v));
+    const row = new Adw.ComboRow({ title, subtitle: subtitle || null, model });
+    const idx = values.indexOf(settings.get_int(key));
+    row.selected = idx < 0 ? 0 : idx;
+    row.connect('notify::selected', () => settings.set_int(key, values[row.selected]));
+    return row;
+}
+
 function colorRow(settings, key, title) {
     const row = new Adw.ActionRow({ title });
     const btn = new Gtk.ColorButton({ valign: Gtk.Align.CENTER, use_alpha: false });
@@ -359,17 +371,21 @@ function fillPreferencesWindow(window) {
 
     // Graphs
     const graphs = new Adw.PreferencesGroup({
-        title: 'Graphs', description: 'In-dropdown Cairo graphs.',
+        title: 'Graphs',
+        description: 'In-dropdown graphs. Tip: click a graph to change its range ' +
+            '(right-click to go back); this dropdown sets the default.',
     });
 
     const costExp = toggleExpander(settings, K.SHOW_GRAPH_COST, 'Daily token usage');
     costExp.add_row(comboRow(settings, K.TOKEN_METRIC, 'Count', TOKEN_METRICS));
-    costExp.add_row(childSpin(settings, K.COST_HISTORY_DAYS, 'Days shown', null, 2, 90, 1));
+    costExp.add_row(intComboRow(settings, K.COST_HISTORY_DAYS, 'Range',
+        Settings.TOKEN_RANGES, Settings.rangeLabelLong));
     graphs.add(costExp);
 
     const utilExp = toggleExpander(settings, K.SHOW_GRAPH_UTIL, 'Utilization trend');
-    utilExp.add_row(childSpin(settings, K.UTIL_TREND_DAYS, 'Days shown',
-        'All samples are kept on disk; this only sets the visible window.', 1, 365, 1));
+    utilExp.add_row(intComboRow(settings, K.UTIL_TREND_DAYS, 'Range',
+        Settings.UTIL_RANGES, Settings.rangeLabelLong,
+        'All samples are kept on disk; this only sets the visible window.'));
     graphs.add(utilExp);
 
     graphs.add(switchRow(settings, K.SHOW_GRAPH_MODELS, 'Per-model token share'));

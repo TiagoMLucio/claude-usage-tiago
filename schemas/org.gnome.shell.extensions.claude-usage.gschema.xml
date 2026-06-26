@@ -103,10 +103,11 @@
         <choice value="week"/>
         <choice value="month"/>
         <choice value="year"/>
+        <choice value="all"/>
       </choices>
       <default>'day'</default>
       <summary>Time period for the summary, model-share graph and projects</summary>
-      <description>Switched from the dropdown via the summary block's arrows.</description>
+      <description>Switched from the header D/W/M/Y/A button.</description>
     </key>
 
     <!-- Graphs -->
@@ -116,8 +117,8 @@
     </key>
     <key name="cost-history-days" type="i">
       <default>14</default>
-      <range min="2" max="90"/>
-      <summary>Days of token history to show</summary>
+      <range min="0" max="365"/>
+      <summary>Days of token history to show (0 = all time)</summary>
     </key>
     <key name="token-metric" type="s">
       <choices>

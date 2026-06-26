@@ -28,6 +28,8 @@ const { UtilHistory } = Me.imports.lib.history;
 const K = Settings.KEYS;
 const ICON_DIR = GLib.build_filenamev([GLib.get_user_state_dir(), 'claude-usage', 'icons']);
 const ICON_BASE_FILL = '#eeeeec'; // fill in claude.svg we recolor
+const SUB_COLOR = { r: 0.42, g: 0.55, b: 0.65 }; // subagent bars (muted slate)
+const ALL_DAYS = 36500; // cost-history-days = 0 means "all time"
 
 // Theme-neutral "dim" text: smaller font via CSS, faded via actor opacity.
 function dim(label) {
@@ -65,8 +67,11 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._transcripts = new TranscriptReader(
             () => Pricing.parsePricing(this._settings.get_string(K.PRICING)),
             // Parse enough days for the cost graph and the selected summary period.
-            () => Math.max(this._settings.get_int(K.COST_HISTORY_DAYS),
-                Format.periodLookbackDays(this._settings.get_string(K.PERIOD))));
+            () => {
+                const ch = this._settings.get_int(K.COST_HISTORY_DAYS);
+                return Math.max(ch === 0 ? ALL_DAYS : ch,
+                    Format.periodLookbackDays(this._settings.get_string(K.PERIOD)));
+            });
 
         // --- state ---
         this._timeoutId = 0;
@@ -453,8 +458,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     // Single header button showing the current period letter (D/W/M/Y).
     // Left-click advances to the next period, right-click goes back; both wrap.
     _periodButton() {
-        const order = ['day', 'week', 'month', 'year'];
-        const labels = { day: 'D', week: 'W', month: 'M', year: 'Y' };
+        const order = ['day', 'week', 'month', 'year', 'all'];
+        const labels = { day: 'D', week: 'W', month: 'M', year: 'Y', all: 'A' };
         const cur = this._period();
         const btn = new St.Button({
             label: labels[cur] || 'D',
@@ -507,19 +512,27 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     }
 
     _renderGraphCost() {
-        const days = this._settings.get_int(K.COST_HISTORY_DAYS);
-        const metric = this._settings.get_string(K.TOKEN_METRIC);
+        const s = this._settings;
+        const days = s.get_int(K.COST_HISTORY_DAYS);
+        const metric = s.get_string(K.TOKEN_METRIC);
         this._graphRow(Graphs.tokensGraph({
             values: this._transcripts.dailyTokens(days, metric),
-            color: this._accentRgb(), width: this._barWidth(), labeled: true,
+            color: this._accentRgb(), subColor: SUB_COLOR, width: this._barWidth(),
+            labeled: true, label: Settings.rangeLabel(days),
+            onCycle: delta => s.set_int(K.COST_HISTORY_DAYS,
+                Settings.cycleRange(Settings.TOKEN_RANGES, days, delta)),
         }));
     }
 
     _renderGraphUtil() {
-        const days = this._settings.get_int(K.UTIL_TREND_DAYS);
+        const s = this._settings;
+        const days = s.get_int(K.UTIL_TREND_DAYS);
         this._graphRow(Graphs.utilGraph({
             samples: this._history.samples(days), days,
             color: this._accentRgb(), width: this._barWidth(), labeled: true,
+            label: Settings.rangeLabel(days),
+            onCycle: delta => s.set_int(K.UTIL_TREND_DAYS,
+                Settings.cycleRange(Settings.UTIL_RANGES, days, delta)),
         }));
     }
 
