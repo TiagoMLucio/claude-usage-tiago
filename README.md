@@ -3,6 +3,10 @@
 GNOME Shell panel indicator for your Claude subscription rate‑limit utilization
 and your Claude Code token usage / estimated API‑equivalent cost.
 
+<p align="center">
+  <img src="screenshot.png" alt="Claude Code Usage dropdown" width="332">
+</p>
+
 > **Unofficial** — not affiliated with or endorsed by Anthropic. "Claude" and
 > the Claude logo are trademarks of Anthropic, used here only to identify the
 > service the extension reports on.
