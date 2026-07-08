@@ -418,14 +418,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 `resets ${Format.fmtReset(u.five_hour?.resets_at)}`, Format.pctOf(u.five_hour));
             this._barRow('Week',
                 `resets ${Format.fmtReset(u.seven_day?.resets_at)}`, Format.pctOf(u.seven_day));
-            if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS)) {
-                for (const [key, name] of [['seven_day_opus', 'Week · Opus'],
-                                           ['seven_day_sonnet', 'Week · Sonnet']]) {
-                    const pct = Format.pctOf(u[key]);
-                    if (pct !== null)
-                        this._barRow(name, '', pct);
-                }
-            }
+            if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS))
+                this._renderModelUsageBars(u);
         } else {
             this._twoColRow({
                 ratelimited: 'Usage API rate-limited',
@@ -434,6 +428,30 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 ok: 'Fetching usage…',
             }[this._usageState], '');
         }
+    }
+
+    // Per-model weekly usage. The API moved these into the `limits` array as
+    // model-scoped weekly entries (e.g. Fable); the old seven_day_opus/sonnet
+    // buckets are now null. Fall back to those buckets for the older shape.
+    _renderModelUsageBars(u) {
+        const bars = [];
+        if (Array.isArray(u.limits)) {
+            for (const lim of u.limits) {
+                const model = lim.scope && lim.scope.model && lim.scope.model.display_name;
+                if (model && lim.group === 'weekly' && lim.percent != null)
+                    bars.push([`Week · ${model}`, Math.max(0, Math.min(100, lim.percent))]);
+            }
+        }
+        if (bars.length === 0) {
+            for (const [key, name] of [['seven_day_opus', 'Week · Opus'],
+                                       ['seven_day_sonnet', 'Week · Sonnet']]) {
+                const pct = Format.pctOf(u[key]);
+                if (pct !== null)
+                    bars.push([name, pct]);
+            }
+        }
+        for (const [name, pct] of bars)
+            this._barRow(name, '', pct);
     }
 
     /* --- selectable period (day/week/month/year) --- */
