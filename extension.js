@@ -1,9 +1,9 @@
 /* Claude Code Usage — GNOME Shell 42 extension (legacy, non-ESM).
  *
  * Top bar: optional Claude icon (recolorable) + configurable text. Dropdown:
- * subscription utilization bars, today's tokens per model, and optional Cairo
- * graphs (daily cost, utilization trend, model share, 5h burn-down). Every
- * visible element is toggleable from preferences.
+ * subscription utilization bars (with a time-elapsed marker), today's tokens
+ * per model, and optional Cairo graphs (daily tokens, utilization trend, model
+ * share). Every visible element is toggleable from preferences.
  *
  * This file is just the indicator UI + orchestration; data sources live in
  * lib/ (usage.js, transcripts.js, history.js, graphs.js, pricing/format,
@@ -296,10 +296,11 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         return item;
     }
 
-    _barRow(title, subtitle, pct) {
+    // `elapsed` (0..1), when given, draws a time-elapsed marker on the bar and
+    // shows the elapsed % next to the utilization % (merged-in burn-down).
+    _barRow(title, subtitle, pct, elapsed = null) {
         const item = this._row();
         const vbox = new St.BoxLayout({ vertical: true, x_expand: true });
-        const width = this._barWidth();
 
         const hbox = new St.BoxLayout({ x_expand: true });
         hbox.add_child(new St.Label({ text: title }));
@@ -312,19 +313,16 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         const pctLabel = new St.Label({ text: pct === null ? '–' : `${Math.round(pct)}%` });
         pctLabel.add_style_class_name('claude-pct');
         hbox.add_child(pctLabel);
+        if (elapsed !== null) {
+            const el = new St.Label({ text: ` · ${Math.round(elapsed * 100)}%` });
+            dim(el);
+            hbox.add_child(el);
+        }
         vbox.add_child(hbox);
 
-        const track = new St.Widget({
-            style_class: 'claude-bar-track', style: `width: ${width}px;`,
-        });
-        if (pct !== null && pct > 0) {
-            const fillW = Math.max(3, Math.round(width * pct / 100));
-            track.add_child(new St.Widget({
-                style_class: 'claude-bar-fill',
-                style: `width: ${fillW}px; background-color: ${this._accent()};`,
-            }));
-        }
-        vbox.add_child(track);
+        vbox.add_child(Graphs.usageBar({
+            pct, elapsed, color: this._accentRgb(), width: this._barWidth(),
+        }));
         item.add_child(vbox);
         return item;
     }
@@ -392,9 +390,6 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         case 'graph-cost': return s.get_boolean(K.SHOW_GRAPH_COST);
         case 'graph-util': return s.get_boolean(K.SHOW_GRAPH_UTIL);
         case 'graph-models': return s.get_boolean(K.SHOW_GRAPH_MODELS);
-        case 'graph-burndown':
-            return s.get_boolean(K.SHOW_GRAPH_BURNDOWN) &&
-                !!(this._usage && this._usage.five_hour);
         }
         return false;
     }
@@ -407,17 +402,26 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         case 'graph-cost': this._renderGraphCost(); break;
         case 'graph-util': this._renderGraphUtil(); break;
         case 'graph-models': this._renderGraphModels(); break;
-        case 'graph-burndown': this._renderGraphBurndown(); break;
         }
+    }
+
+    // Fraction of a window elapsed, from its resets_at and length (ms).
+    _elapsed(bucket, windowMs) {
+        const ts = Date.parse(bucket?.resets_at || '');
+        if (isNaN(ts))
+            return null;
+        return Math.max(0, Math.min(1, (windowMs - (ts - Date.now())) / windowMs));
     }
 
     _renderUsage() {
         const u = this._usage;
         if (u) {
             this._barRow('Session (5h)',
-                `resets ${Format.fmtReset(u.five_hour?.resets_at)}`, Format.pctOf(u.five_hour));
+                `resets ${Format.fmtReset(u.five_hour?.resets_at)}`,
+                Format.pctOf(u.five_hour), this._elapsed(u.five_hour, 5 * 3600 * 1000));
             this._barRow('Week',
-                `resets ${Format.fmtReset(u.seven_day?.resets_at)}`, Format.pctOf(u.seven_day));
+                `resets ${Format.fmtReset(u.seven_day?.resets_at)}`,
+                Format.pctOf(u.seven_day), this._elapsed(u.seven_day, 7 * 24 * 3600 * 1000));
             if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS))
                 this._renderModelUsageBars(u);
         } else {
@@ -434,12 +438,14 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     // model-scoped weekly entries (e.g. Fable); the old seven_day_opus/sonnet
     // buckets are now null. Fall back to those buckets for the older shape.
     _renderModelUsageBars(u) {
+        const WEEK = 7 * 24 * 3600 * 1000;
         const bars = [];
         if (Array.isArray(u.limits)) {
             for (const lim of u.limits) {
                 const model = lim.scope && lim.scope.model && lim.scope.model.display_name;
                 if (model && lim.group === 'weekly' && lim.percent != null)
-                    bars.push([`Week · ${model}`, Math.max(0, Math.min(100, lim.percent))]);
+                    bars.push([`Week · ${model}`, Math.max(0, Math.min(100, lim.percent)),
+                        this._elapsed(lim, WEEK)]);
             }
         }
         if (bars.length === 0) {
@@ -447,11 +453,11 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                                        ['seven_day_sonnet', 'Week · Sonnet']]) {
                 const pct = Format.pctOf(u[key]);
                 if (pct !== null)
-                    bars.push([name, pct]);
+                    bars.push([name, pct, this._elapsed(u[key], WEEK)]);
             }
         }
-        for (const [name, pct] of bars)
-            this._barRow(name, '', pct);
+        for (const [name, pct, elapsed] of bars)
+            this._barRow(name, '', pct, elapsed);
     }
 
     /* --- selectable period (day/week/month/year) --- */
@@ -563,21 +569,6 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._graphRow(Graphs.modelGraph({
             segments, accent: this._accentRgb(), width: this._barWidth(), labeled: true,
         }));
-    }
-
-    _renderGraphBurndown() {
-        const u = this._usage;
-        const color = this._accentRgb(), width = this._barWidth();
-        this._graphRow(Graphs.burndownGraph({
-            pct: Format.pctOf(u.five_hour), resetsAt: u.five_hour.resets_at,
-            windowMs: 5 * 3600 * 1000, title: '5h', color, width,
-        }));
-        if (u.seven_day) {
-            this._graphRow(Graphs.burndownGraph({
-                pct: Format.pctOf(u.seven_day), resetsAt: u.seven_day.resets_at,
-                windowMs: 7 * 24 * 3600 * 1000, title: 'Week', color, width,
-            }));
-        }
     }
 
     _rebuildMenu() {

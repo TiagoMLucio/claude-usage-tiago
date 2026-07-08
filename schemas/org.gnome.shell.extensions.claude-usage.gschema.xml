@@ -143,14 +143,10 @@
       <default>true</default>
       <summary>Show the per-model token-share graph</summary>
     </key>
-    <key name="show-graph-burndown" type="b">
-      <default>true</default>
-      <summary>Show the current 5h window burn-down graph</summary>
-    </key>
 
     <!-- Order of dropdown blocks (unknown ids ignored, missing ones appended) -->
     <key name="section-order" type="as">
-      <default>['usage','today','projects','graph-cost','graph-util','graph-models','graph-burndown']</default>
+      <default>['usage','today','projects','graph-cost','graph-util','graph-models']</default>
       <summary>Order in which dropdown blocks are shown</summary>
     </key>
 

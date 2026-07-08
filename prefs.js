@@ -389,7 +389,6 @@ function fillPreferencesWindow(window) {
     graphs.add(utilExp);
 
     graphs.add(switchRow(settings, K.SHOW_GRAPH_MODELS, 'Per-model token share'));
-    graphs.add(switchRow(settings, K.SHOW_GRAPH_BURNDOWN, '5h + weekly burn-down'));
     page.add(graphs);
 
     // Order
