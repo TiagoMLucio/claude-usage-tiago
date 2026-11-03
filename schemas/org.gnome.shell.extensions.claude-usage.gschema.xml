@@ -32,7 +32,7 @@
       </choices>
       <default>'white'</default>
       <summary>Panel icon color</summary>
-      <description>white: monochrome white; orange: original brand terracotta; accent: follow the accent-color setting.</description>
+      <description>white: monochrome white; orange: the provider's own color (Claude terracotta, the Codex logo gradient); accent: follow the accent-color setting.</description>
     </key>
     <key name="show-panel-text" type="b">
       <default>true</default>
@@ -159,9 +159,9 @@
       <summary>Progress bar / graph width (px)</summary>
     </key>
     <key name="accent-color" type="s">
-      <default>'#D97757'</default>
+      <default>''</default>
       <summary>Accent color for bars and graphs</summary>
-      <description>Any CSS color string, e.g. #D97757 or rgb(217,119,87).</description>
+      <description>Any CSS color string, e.g. #D97757 or rgb(217,119,87). Empty: the provider's own color (Claude #D97757, Codex #7A9DFF).</description>
     </key>
 
     <!-- Pricing (edited via per-model rows in prefs; stored as JSON) -->

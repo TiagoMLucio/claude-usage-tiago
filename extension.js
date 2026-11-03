@@ -31,16 +31,17 @@ const { UtilHistory } = Me.imports.lib.history;
 const K = Settings.KEYS;
 const ICON_DIR = GLib.build_filenamev([GLib.get_user_state_dir(), 'claude-usage', 'icons']);
 const ICON_BASE_FILL = '#eeeeec'; // fill in the provider svgs we recolor
-const SUB_COLOR = { r: 0.42, g: 0.55, b: 0.65 }; // subagent bars (muted slate)
 const ALL_DAYS = 36500; // cost-history-days = 0 means "all time"
 
 const PROVIDERS = [
     {
-        id: 'claude', name: 'Claude', role: 'claude-usage', icon: 'claude.svg',
+        id: 'claude', name: 'Claude', role: 'claude-usage', icon: 'claude.svg', brand: '#D97757',
         historyFile: 'util-history.jsonl', Client: UsageClient,
     },
     {
-        id: 'codex', name: 'Codex', role: 'codex-usage', icon: 'codex.svg',
+        id: 'codex', name: 'Codex', role: 'codex-usage', icon: 'codex.svg', brand: '#7A9DFF',
+        // the Codex logo's own gradient, top to bottom
+        gradient: ['#B1A7FF', '#7A9DFF', '#3941FF'],
         historyFile: 'codex-util-history.jsonl', Client: CodexUsage.CodexUsageClient,
         available: CodexUsage.available, limitsInLogs: true,
     },
@@ -124,13 +125,29 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     /* --- icon --- */
 
+    // 'orange' is the provider's own color (the setting predates Codex).
     _iconColor() {
         switch (this._settings.get_string(K.ICON_COLOR)) {
-        case 'orange': return '#D97757';
-        case 'accent': return this._settings.get_string(K.ACCENT_COLOR) || '#D97757';
+        case 'orange': return this._provider.brand;
+        case 'accent': return this._accent();
         case 'white':
         default:        return '#ffffff';
         }
+    }
+
+    // The provider's svg with its fill replaced by `color`, or by the logo's
+    // gradient for the provider's own color when it has one.
+    _iconSvg(color) {
+        const [, bytes] = GLib.file_get_contents(`${Me.path}/${this._provider.icon}`);
+        const svg = ByteArray.toString(bytes);
+        const stops = this._provider.gradient;
+        if (!stops || this._settings.get_string(K.ICON_COLOR) !== 'orange')
+            return svg.split(ICON_BASE_FILL).join(color);
+        const defs = '<defs><linearGradient id="brand" gradientUnits="userSpaceOnUse" ' +
+            'x1="12" x2="12" y1="2" y2="22">' + stops.map((c, i) =>
+            `<stop offset="${i / (stops.length - 1)}" stop-color="${c}"/>`).join('') +
+            '</linearGradient></defs>';
+        return svg.split(ICON_BASE_FILL).join('url(#brand)').replace(/(<svg[^>]*>)/, `$1${defs}`);
     }
 
     // Recolor the provider's svg to the chosen color, write it under the state dir, and
@@ -138,7 +155,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     // serve a stale cached texture when the color changes.
     _applyIcon() {
         const color = this._iconColor();
-        const slug = color.replace(/[^0-9a-zA-Z]/g, '');
+        const gradient = this._provider.gradient && this._settings.get_string(K.ICON_COLOR) === 'orange';
+        const slug = gradient ? 'gradient' : color.replace(/[^0-9a-zA-Z]/g, '');
         const svgPath = `${Me.path}/${this._provider.icon}`;
         const outPath = GLib.build_filenamev([ICON_DIR, `${this._provider.id}-${slug}.svg`]);
         try {
@@ -148,9 +166,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 } catch (e) {
                     // directory already exists — fine
                 }
-                const [, bytes] = GLib.file_get_contents(svgPath);
-                const svg = ByteArray.toString(bytes).split(ICON_BASE_FILL).join(color);
-                GLib.file_set_contents(outPath, svg);
+                GLib.file_set_contents(outPath, this._iconSvg(color));
             }
             this._icon.gicon = Gio.icon_new_for_string(outPath);
         } catch (e) {
@@ -320,8 +336,9 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     /* --- shared helpers --- */
 
+    // An empty setting means the provider's own color.
     _accent() {
-        return this._settings.get_string(K.ACCENT_COLOR) || '#D97757';
+        return this._settings.get_string(K.ACCENT_COLOR) || this._provider.brand;
     }
 
     _accentRgb() {
@@ -546,10 +563,10 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
             this._barRow('Week',
                 `resets ${Format.fmtReset(u.seven_day?.resets_at)}`,
                 Format.pctOf(u.seven_day), this._elapsed(u.seven_day, 7 * 24 * 3600 * 1000));
-            if (typeof u.reset_credits === 'number')
-                this._twoColRow('Limit resets available', `${u.reset_credits}`);
             if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS))
                 this._renderModelUsageBars(u);
+            if (typeof u.reset_credits === 'number')
+                this._twoColRow('Limit resets available', `${u.reset_credits}`);
         } else {
             this._twoColRow({
                 ratelimited: 'Usage API rate-limited',
@@ -733,7 +750,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         }
         this._graphRow(Graphs.tokensGraph({
             values, legend,
-            color: this._accentRgb(), subColor: SUB_COLOR, width: this._barWidth(),
+            color: this._accentRgb(), subColor: Graphs.secondaryColor(this._accentRgb()),
+            width: this._barWidth(),
             labeled: true, label: Settings.rangeLabel(days),
             onCycle: delta => s.set_int(K.COST_HISTORY_DAYS,
                 Settings.cycleRange(Settings.TOKEN_RANGES, days, delta)),

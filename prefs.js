@@ -25,7 +25,7 @@ const PANEL_FORMATS = [
 ];
 const ICON_COLORS = [
     ['white', 'White'],
-    ['orange', 'Original orange'],
+    ['orange', 'Original color'],
     ['accent', 'Follow accent color'],
 ];
 const TOKEN_METRICS = [
@@ -97,18 +97,31 @@ function intComboRow(settings, key, title, values, labelFn, subtitle) {
     return row;
 }
 
-function colorRow(settings, key, title) {
+// An empty setting shows (and means) `fallback`; the undo button returns to it.
+function colorRow(settings, key, title, fallback) {
     const row = new Adw.ActionRow({ title });
     const btn = new Gtk.ColorButton({ valign: Gtk.Align.CENTER, use_alpha: false });
-    const rgba = new Gdk.RGBA();
-    if (rgba.parse(settings.get_string(key)))
-        btn.set_rgba(rgba);
+    const show = () => {
+        const rgba = new Gdk.RGBA();
+        if (rgba.parse(settings.get_string(key) || fallback))
+            btn.set_rgba(rgba);
+    };
+    show();
     btn.connect('color-set', () => {
         const c = btn.get_rgba();
         const hex = '#' + [c.red, c.green, c.blue]
             .map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
         settings.set_string(key, hex);
     });
+    const reset = new Gtk.Button({
+        icon_name: 'edit-undo-symbolic', css_classes: ['flat'], valign: Gtk.Align.CENTER,
+        tooltip_text: `Use the button's own color (${fallback})`,
+    });
+    reset.connect('clicked', () => {
+        settings.set_string(key, '');
+        show();
+    });
+    row.add_suffix(reset);
     row.add_suffix(btn);
     row.activatable_widget = btn;
     return row;
@@ -423,8 +436,8 @@ function familiesGroup(settings, provider) {
 /* --- page assembly --- */
 
 const PAGES = [
-    { id: 'claude', name: 'Claude', logs: 'Claude Code transcripts', bars: ['Per-model weekly bars', 'Opus / Sonnet / Fable weekly limits, when present.'] },
-    { id: 'codex', name: 'Codex', logs: 'Codex session logs', bars: ['Per-app weekly bars', 'Apps your plan is shared with (Sign in with ChatGPT).'] },
+    { id: 'claude', name: 'Claude', brand: '#D97757', logs: 'Claude Code transcripts', bars: ['Per-model weekly bars', 'Opus / Sonnet / Fable weekly limits, when present.'] },
+    { id: 'codex', name: 'Codex', brand: '#7A9DFF', logs: 'Codex session logs', bars: ['Per-app weekly bars', 'Apps your plan is shared with (Sign in with ChatGPT).'] },
 ];
 
 // One page per panel button, each bound to that button's settings.
@@ -507,7 +520,7 @@ function providerPage(settings, provider) {
     // Appearance
     const appearance = new Adw.PreferencesGroup({ title: 'Appearance' });
     appearance.add(spinRow(settings, K.BAR_WIDTH, 'Bar / graph width (px)', null, 80, 600, 10));
-    appearance.add(colorRow(settings, K.ACCENT_COLOR, 'Accent color'));
+    appearance.add(colorRow(settings, K.ACCENT_COLOR, 'Accent color', provider.brand));
     page.add(appearance);
     return page;
 }
