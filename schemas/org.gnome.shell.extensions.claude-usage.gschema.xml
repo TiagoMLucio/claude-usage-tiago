@@ -136,8 +136,8 @@
     </key>
     <key name="util-trend-days" type="i">
       <default>7</default>
-      <range min="1" max="365"/>
-      <summary>Days of utilization trend to display (all samples are retained on disk)</summary>
+      <range min="0" max="365"/>
+      <summary>Days of utilization trend to display (0 = all time; all samples are retained on disk)</summary>
     </key>
     <key name="show-graph-models" type="b">
       <default>true</default>
