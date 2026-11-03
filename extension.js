@@ -9,7 +9,7 @@
  * lib/ (usage.js, transcripts.js, history.js, graphs.js, pricing/format,
  * settings.js). */
 
-const { GLib, Gio, St, Clutter, GObject, Pango } = imports.gi;
+const { GLib, Gio, St, Clutter, GObject, Graphene, Pango } = imports.gi;
 const ByteArray = imports.byteArray;
 const Main = imports.ui.main;
 const PanelMenu = imports.ui.panelMenu;
@@ -82,6 +82,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._lastTranscriptRefresh = 0;
         this._plan = '';
         this._destroyed = false;
+        this._openFamilies = new Set(); // model families expanded in the summary
 
         this._settingsChangedId = this._settings.connect('changed',
             (_s, key) => this._onSettingChanged(key));
@@ -90,6 +91,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._openStateId = this.menu.connect('open-state-changed', (_m, open) => {
             if (open)
                 this._onMenuOpen();
+            else
+                this._openFamilies.clear();
         });
 
         this._applyIcon();
@@ -314,6 +317,51 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         return item;
     }
 
+    // Row with a leading chevron slot (invisible when nested), so family and
+    // version labels line up. Returns [item, chevron].
+    _treeRow(text, rightText, nested) {
+        const item = this._row({ hover: !nested });
+        // Ubuntu has no '⌄', so "open" is the same '›' turned down.
+        const arrow = new St.Label({
+            text: '›', y_align: Clutter.ActorAlign.CENTER,
+            pivot_point: new Graphene.Point({ x: 0.5, y: 0.5 }),
+            opacity: nested ? 0 : 165,
+        });
+        item.add_child(arrow);
+        item.add_child(new St.Label({
+            text, x_expand: true, y_align: Clutter.ActorAlign.CENTER,
+            style: nested ? 'padding-left: 16px;' : '',
+        }));
+        item.add_child(dim(new St.Label({ text: rightText, y_align: Clutter.ActorAlign.CENTER })));
+        return [item, arrow];
+    }
+
+    // A family row whose version rows stay hidden until it is clicked. Open
+    // families survive menu rebuilds and collapse when the menu closes.
+    _familyRows(family, rightText, versions) {
+        const [item, arrow] = this._treeRow(family, rightText, false);
+        const rows = versions.map(([name, text]) => this._treeRow(name, text, true)[0]);
+        if (rows.length === 0) {
+            arrow.opacity = 0;
+            return;
+        }
+        const show = open => {
+            arrow.rotation_angle_z = open ? 90 : 0;
+            for (const row of rows)
+                row.visible = open;
+        };
+        show(this._openFamilies.has(family));
+        item.connect('button-release-event', () => {
+            const open = !this._openFamilies.has(family);
+            if (open)
+                this._openFamilies.add(family);
+            else
+                this._openFamilies.delete(family);
+            show(open);
+            return Clutter.EVENT_STOP;
+        });
+    }
+
     // `elapsed` (0..1), when given, draws a time-elapsed marker on the bar and
     // shows the elapsed % next to the utilization % (merged-in burn-down).
     _barRow(title, subtitle, pct, elapsed = null) {
@@ -532,10 +580,11 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
             return;
         }
         if (s.get_boolean(K.SHOW_MODEL_BREAKDOWN)) {
-            const models = Object.entries(perModel).sort((a, b) => b[1].output - a[1].output);
-            for (const [model, t] of models) {
-                this._twoColRow(`  ${Format.prettyModel(model)}`,
-                    `out ${Format.fmtTokens(t.output)} · ${t.messages} msgs`);
+            const usage = t => `out ${Format.fmtTokens(t.output)} · ${t.messages} msgs`;
+            for (const { family, total: ft, models } of Format.groupByFamily(perModel)) {
+                this._familyRows(family, usage(ft), models
+                    .map(([model, t]) => [Format.prettyModel(model), usage(t)])
+                    .filter(([name]) => name !== family));
             }
         }
         if (s.get_boolean(K.SHOW_TOKEN_DETAILS)) {
@@ -583,10 +632,9 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     _renderGraphModels() {
         const [perModel] = this._transcripts.aggregatePeriod(this._periodStart());
-        const segments = Object.entries(perModel)
-            .map(([model, t]) => ({ label: Format.prettyModel(model), value: t.output }))
-            .filter(seg => seg.value > 0)
-            .sort((a, b) => b.value - a.value);
+        const segments = Format.groupByFamily(perModel)
+            .map(({ family, total }) => ({ label: family, value: total.output }))
+            .filter(seg => seg.value > 0);
         this._graphRow(Graphs.modelGraph({
             segments, accent: this._accentRgb(), width: this._barWidth(), labeled: true,
         }));
