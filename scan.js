@@ -87,35 +87,38 @@ function main() {
         // no cache yet, or unreadable
     }
     const prevSerial = data && typeof data.serial === 'number' ? data.serial : 0;
-    // Prices are baked into each entry's cost, so a price change starts over.
-    const usable = !!data && data.version === Logs.CACHE_VERSION && data.pricingKey === pricingKey;
-    const files = usable ? data.files || {} : {};
-    let coverageStart = usable && typeof data.coverageStart === 'number' ? data.coverageStart : null;
+    const compatible = !!data && data.version === Logs.CACHE_VERSION;
+    // Prices are baked into each entry's cost: a price change re-parses every
+    // file still on disk, and entries of deleted ones keep their old cost.
+    const repriced = compatible && data.pricingKey !== pricingKey;
+    const reset = !compatible || repriced;
+    const files = compatible ? data.files || {} : {};
+    let coverageStart = compatible && typeof data.coverageStart === 'number' ? data.coverageStart : null;
     const serial = prevSerial + 1;
-    let dirty = !usable;
+    let dirty = reset;
 
     // Grow-only coverage: the oldest day parsed so far. If we need older data,
     // re-parse every in-window file at the new (older) start; a shorter window
     // needs nothing, since aggregations just slice the data already cached.
     const desired = Format.windowStartMs(days);
-    const grow = coverageStart === null || desired < coverageStart;
-    if (grow) {
+    if (coverageStart === null || desired < coverageStart) {
         coverageStart = desired;
         dirty = true;
     }
+    const reparse = dirty;
 
     for (const f of Logs.listFiles()) {
         if (f.mtime * 1000 < coverageStart)
             continue; // outside the parse window: skip, but keep any cached data
         const cached = files[f.path];
         if (cached) {
-            if (!grow && cached.mtime === f.mtime && cached.size === f.size)
+            if (!reparse && cached.mtime === f.mtime && cached.size === f.size)
                 continue; // unchanged
             if (f.size < cached.size)
                 continue; // shrank (truncated by a crash / compaction) — keep the fuller parse
         }
         // Entries saved before offsets existed are re-read once from the start.
-        const base = !grow && cached && typeof cached.offset === 'number' ? cached : null;
+        const base = !reparse && cached && typeof cached.offset === 'number' ? cached : null;
         const entry = parseFile(f, coverageStart, prices, base);
         if (entry) {
             entry.serial = serial;
@@ -136,10 +139,10 @@ function main() {
 
     const changed = {};
     for (const [path, entry] of Object.entries(files)) {
-        if (!usable || (entry.serial || 0) > knownSerial)
+        if (reset || (entry.serial || 0) > knownSerial)
             changed[path] = entry;
     }
-    print(JSON.stringify({ reset: !usable, serial: dirty ? serial : prevSerial, files: changed }));
+    print(JSON.stringify({ reset, serial: dirty ? serial : prevSerial, files: changed }));
 }
 
 main();

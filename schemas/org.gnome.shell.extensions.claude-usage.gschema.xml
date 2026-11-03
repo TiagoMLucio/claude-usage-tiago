@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <schema id="org.gnome.shell.extensions.claude-usage"
-          path="/org/gnome/shell/extensions/claude-usage/">
+  <!-- Every key of one panel button; the two schemas below place it. -->
+  <schema id="org.gnome.shell.extensions.claude-usage.base">
 
     <!-- Refresh cadence -->
     <key name="refresh-seconds" type="i">
@@ -166,8 +166,24 @@
     <key name="pricing" type="s">
       <default>''</default>
       <summary>Custom pricing override (JSON)</summary>
-      <description>JSON array of [model-substring, input $/MTok, output $/MTok]. Empty string uses the built-in defaults.</description>
+      <description>JSON array of [model-substring, input $/MTok, output $/MTok, cached input $/MTok (optional)]. Empty string uses the built-in defaults. Shared by both buttons: only the Claude schema's value is read.</description>
     </key>
 
+    <!-- Model families left out of the per-model rows and the model-share graph -->
+    <key name="hidden-families" type="as">
+      <default>[]</default>
+      <summary>Model families hidden from the dropdown list</summary>
+    </key>
+
+  </schema>
+
+  <schema id="org.gnome.shell.extensions.claude-usage"
+          path="/org/gnome/shell/extensions/claude-usage/"
+          extends="org.gnome.shell.extensions.claude-usage.base"/>
+
+  <schema id="org.gnome.shell.extensions.claude-usage.codex"
+          path="/org/gnome/shell/extensions/claude-usage/codex/"
+          extends="org.gnome.shell.extensions.claude-usage.base">
+    <override name="accent-color">'#10a37f'</override>
   </schema>
 </schemalist>

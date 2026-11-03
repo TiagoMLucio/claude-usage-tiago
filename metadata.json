@@ -4,5 +4,5 @@
   "description": "Shows Claude and Codex subscription rate-limit utilization plus Claude Code and Codex token usage and estimated API-equivalent cost, parsed from ~/.claude transcripts and ~/.codex session logs. One panel button per provider; configurable via preferences.",
   "shell-version": ["42"],
   "settings-schema": "org.gnome.shell.extensions.claude-usage",
-  "version": 19
+  "version": 20
 }

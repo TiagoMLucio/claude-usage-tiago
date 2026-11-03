@@ -55,9 +55,11 @@ function dim(label) {
 
 const Indicator = GObject.registerClass(
 class ClaudeUsageIndicator extends PanelMenu.Button {
-    _init(settings, provider) {
+    // `pricingSettings` holds the price table both buttons share.
+    _init(settings, pricingSettings, provider) {
         super._init(0.0, `${provider.name} Usage`);
         this._settings = settings;
+        this._pricingSettings = pricingSettings;
         this._provider = provider;
 
         // --- panel button ---
@@ -81,7 +83,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this._history = new UtilHistory(provider.historyFile);
         this._history.load();
         this._transcripts = new TranscriptReader(provider.id,
-            () => Pricing.parsePricing(this._settings.get_string(K.PRICING)),
+            () => Pricing.parsePricing(this._pricingSettings.get_string(K.PRICING)),
             // Parse enough days for the cost graph and the selected summary period.
             () => {
                 const ch = this._settings.get_int(K.COST_HISTORY_DAYS);
@@ -103,6 +105,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
         this._settingsChangedId = this._settings.connect('changed',
             (_s, key) => this._onSettingChanged(key));
+        this._pricingChangedId = pricingSettings === settings ? 0
+            : pricingSettings.connect(`changed::${K.PRICING}`, () => this._onSettingChanged(K.PRICING));
         // The dropdown (graphs, per-model rows, transcript parsing) is rebuilt
         // only while it's open — see _updateUi / _onMenuOpen.
         this._openStateId = this.menu.connect('open-state-changed', (_m, open) => {
@@ -572,8 +576,13 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                     bars.push([name, pct, this._elapsed(u[key], WEEK)]);
             }
         }
-        for (const [name, pct, elapsed] of bars)
-            this._barRow(name, '', pct, elapsed);
+        // Apps the Codex plan is shared with draw on the same weekly limit.
+        for (const app of Array.isArray(u.apps) ? u.apps : []) {
+            bars.push([`Week · ${app.name}`, Format.pctOf(app), this._elapsed(app, WEEK),
+                typeof app.cap === 'number' && app.cap < 100 ? `cap ${app.cap}%` : '']);
+        }
+        for (const [name, pct, elapsed, subtitle] of bars)
+            this._barRow(name, subtitle || '', pct, elapsed);
     }
 
     /* --- selectable period (day/week/month/year) --- */
@@ -616,30 +625,83 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         return btn;
     }
 
+    _hiddenFamilies() {
+        return new Set(this._settings.get_strv(K.HIDDEN_FAMILIES));
+    }
+
+    // { day: tokens } of the account that no local log holds: where the
+    // server's daily totals (UTC days, about a day behind) run ahead of the
+    // logged tokens (local days). A running balance nets out a day split across
+    // the two calendars. null without server totals.
+    _notLoggedByDay() {
+        const daily = this._usage && this._usage.daily;
+        const days = daily ? Object.keys(daily).sort() : [];
+        if (days.length === 0)
+            return null;
+        const logged = this._transcripts.tokensByDay();
+        const out = {};
+        let balance = 0, counted = 0;
+        for (let d = days[0]; d <= days[days.length - 1]; d = Format.nextDayKey(d)) {
+            balance += (daily[d] || 0) - (logged[d] || 0);
+            if (balance > counted) {
+                out[d] = balance - counted;
+                counted = balance;
+            }
+        }
+        return out;
+    }
+
+    _notLogged(startMs) {
+        const byDay = this._notLoggedByDay();
+        if (!byDay)
+            return null;
+        const startKey = Format.dayKey(startMs);
+        let sum = 0;
+        for (const [day, tokens] of Object.entries(byDay)) {
+            if (day >= startKey)
+                sum += tokens;
+        }
+        return sum;
+    }
+
     _renderSummary() {
         const s = this._settings;
         const [perModel, total] = this._transcripts.aggregatePeriod(this._periodStart());
-        this._twoColRow(Format.periodLabel(this._period()), `${total.messages} messages`,
-            { leftClass: 'claude-header' });
+        const notLogged = this._notLogged(this._periodStart());
+        const allTokens = t => t.input + t.output + t.cacheRead + t.cacheWrite;
+        this._twoColRow(Format.periodLabel(this._period()), notLogged === null
+            ? `${total.messages} messages`
+            : `${Format.fmtTokens(allTokens(total) + notLogged)} tokens`,
+        { leftClass: 'claude-header' });
 
-        if (total.messages === 0) {
+        if (total.messages === 0 && !notLogged) {
             this._twoColRow('', 'no activity yet');
             return;
         }
         if (s.get_boolean(K.SHOW_MODEL_BREAKDOWN)) {
-            const usage = t => `out ${Format.fmtTokens(t.output)} · ${t.messages} msgs`;
+            // With server totals the rows count every token, so they add up to the header.
+            const usage = notLogged === null
+                ? t => `out ${Format.fmtTokens(t.output)} · ${t.messages} msgs`
+                : t => `${Format.fmtTokens(allTokens(t))} · ${t.messages} msgs`;
+            const hidden = this._hiddenFamilies();
             for (const { family, total: ft, models } of Format.groupByFamily(perModel)) {
+                if (hidden.has(family))
+                    continue;
                 this._familyRows(family, usage(ft), models
                     .map(([model, t]) => [Format.prettyModel(model), usage(t)])
                     .filter(([name]) => name !== family));
             }
+            if (notLogged)
+                this._treeRow('Not in local logs', Format.fmtTokens(notLogged), false)[1].opacity = 0;
         }
         if (s.get_boolean(K.SHOW_TOKEN_DETAILS)) {
             this._twoColRow('', `in ${Format.fmtTokens(total.input)} · cache ` +
                 `${Format.fmtTokens(total.cacheRead)}r / ${Format.fmtTokens(total.cacheWrite)}w`);
         }
-        if (s.get_boolean(K.SHOW_COST))
-            this._twoColRow('', `≈ $${total.cost.toFixed(2)} at API prices`);
+        if (s.get_boolean(K.SHOW_COST)) {
+            this._twoColRow('', `≈ $${total.cost.toFixed(2)} at API prices` +
+                (notLogged === null ? '' : ' (logged)'));
+        }
     }
 
     _renderProjects() {
@@ -656,8 +718,15 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         const s = this._settings;
         const days = s.get_int(K.COST_HISTORY_DAYS);
         const metric = s.get_string(K.TOKEN_METRIC);
+        let values = this._transcripts.dailyTokens(days, metric);
+        let legend;
+        const notLogged = metric === 'all' ? this._notLoggedByDay() : null;
+        if (notLogged) {
+            legend = ['logged', 'not in logs'];
+            values = values.map(({ day, main, sub }) => ({ day, main: main + sub, sub: notLogged[day] || 0 }));
+        }
         this._graphRow(Graphs.tokensGraph({
-            values: this._transcripts.dailyTokens(days, metric),
+            values, legend,
             color: this._accentRgb(), subColor: SUB_COLOR, width: this._barWidth(),
             labeled: true, label: Settings.rangeLabel(days),
             onCycle: delta => s.set_int(K.COST_HISTORY_DAYS,
@@ -683,7 +752,9 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     _renderGraphModels() {
         const [perModel] = this._transcripts.aggregatePeriod(this._periodStart());
+        const hidden = this._hiddenFamilies();
         const segments = Format.groupByFamily(perModel)
+            .filter(({ family }) => !hidden.has(family))
             .map(({ family, total }) => ({ label: family, value: total.output }))
             .filter(seg => seg.value > 0);
         this._graphRow(Graphs.modelGraph({
@@ -756,6 +827,10 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = 0;
         }
+        if (this._pricingChangedId) {
+            this._pricingSettings.disconnect(this._pricingChangedId);
+            this._pricingChangedId = 0;
+        }
         if (this._openStateId) {
             this.menu.disconnect(this._openStateId);
             this._openStateId = 0;
@@ -778,7 +853,8 @@ class Extension {
         for (const provider of PROVIDERS.slice().reverse()) {
             if (provider.available && !provider.available())
                 continue;
-            const indicator = new Indicator(this._settings, provider);
+            const settings = provider.id === 'claude' ? this._settings : Settings.getSettings(provider.id);
+            const indicator = new Indicator(settings, this._settings, provider);
             Main.panel.addToStatusArea(provider.role, indicator);
             this._indicators.push(indicator);
         }

@@ -11,6 +11,7 @@ const ExtensionUtils = imports.misc.extensionUtils;
 const Me = ExtensionUtils.getCurrentExtension();
 const Settings = Me.imports.lib.settings;
 const Pricing = Me.imports.lib.pricing;
+const Format = Me.imports.lib.format;
 
 const K = Settings.KEYS;
 const FLAGS = Gio.SettingsBindFlags.DEFAULT;
@@ -169,42 +170,48 @@ function pricingGroup(settings) {
         name.connect('changed', () => { model.key = name.get_text(); commit(); });
         row.add_prefix(name);
 
-        const mkSpin = (val, tip, step = 0.5) => {
-            const spin = new Gtk.SpinButton({
-                valign: Gtk.Align.CENTER, digits: 2, tooltip_text: tip,
-                adjustment: new Gtk.Adjustment({
-                    lower: 0, upper: 1000, step_increment: step, page_increment: step * 10,
-                }),
+        // Text fields, not spin buttons: scrolling the page over a spin button
+        // changes its value, and every price change re-prices the caches.
+        const priceEntry = (value, tip, onValue, optional = false) => {
+            const entry = new Gtk.Entry({
+                valign: Gtk.Align.CENTER, width_chars: 6, max_width_chars: 6, xalign: 1,
+                tooltip_text: tip, input_purpose: Gtk.InputPurpose.NUMBER,
+                text: value === undefined ? '' : String(value),
             });
-            spin.set_value(val);
-            return spin;
+            entry.connect('changed', () => {
+                const text = entry.get_text().trim();
+                const v = Number(text);
+                const ok = (optional && text === '') || (text !== '' && isFinite(v) && v >= 0);
+                if (ok)
+                    entry.remove_css_class('error');
+                else
+                    entry.add_css_class('error');
+                if (ok)
+                    onValue(text === '' ? undefined : v);
+            });
+            return entry;
         };
-        const inSpin = mkSpin(model.input, 'Input $/MTok');
-        const outSpin = mkSpin(model.output, 'Output $/MTok');
-        const cachedSpin = mkSpin(model.cached ?? model.input * 0.1, 'Cached input $/MTok', 0.01);
-        let syncing = false;
-        inSpin.connect('value-changed', () => {
-            model.input = inSpin.get_value();
-            if (model.cached === undefined) {
-                syncing = true;
-                cachedSpin.set_value(model.input * 0.1);
-                syncing = false;
-            }
+        const cachedHint = () => `${+(model.input * 0.1).toFixed(4)}`;
+        const cachedEntry = priceEntry(model.cached, 'Cached input $/MTok (empty: 10% of input)', v => {
+            model.cached = v;
+            commit();
+        }, true);
+        cachedEntry.placeholder_text = cachedHint();
+        const inEntry = priceEntry(model.input, 'Input $/MTok', v => {
+            model.input = v;
+            cachedEntry.placeholder_text = cachedHint();
             commit();
         });
-        outSpin.connect('value-changed', () => { model.output = outSpin.get_value(); commit(); });
-        cachedSpin.connect('value-changed', () => {
-            if (syncing)
-                return;
-            model.cached = cachedSpin.get_value();
+        const outEntry = priceEntry(model.output, 'Output $/MTok', v => {
+            model.output = v;
             commit();
         });
         row.add_suffix(new Gtk.Label({ label: 'in', css_classes: ['dim-label'] }));
-        row.add_suffix(inSpin);
+        row.add_suffix(inEntry);
         row.add_suffix(new Gtk.Label({ label: 'cached', css_classes: ['dim-label'] }));
-        row.add_suffix(cachedSpin);
+        row.add_suffix(cachedEntry);
         row.add_suffix(new Gtk.Label({ label: 'out', css_classes: ['dim-label'] }));
-        row.add_suffix(outSpin);
+        row.add_suffix(outEntry);
 
         const del = new Gtk.Button({
             valign: Gtk.Align.CENTER, icon_name: 'edit-delete-symbolic',
@@ -340,12 +347,75 @@ function orderGroup(settings) {
     return group;
 }
 
+/* --- model families shown in the dropdown --- */
+
+const CACHE_FILES = { claude: 'transcripts-cache.json', codex: 'codex-cache.json' };
+
+// Families in the provider's saved cache, most output first.
+function seenFamilies(provider) {
+    const path = GLib.build_filenamev([GLib.get_user_state_dir(), 'claude-usage', CACHE_FILES[provider]]);
+    const perModel = {};
+    try {
+        const [, bytes] = GLib.file_get_contents(path);
+        const data = JSON.parse(imports.byteArray.toString(bytes));
+        for (const entry of Object.values(data.files || {})) {
+            for (const day of Object.values(entry.byDay || {})) {
+                for (const [model, t] of Object.entries(day)) {
+                    if (!perModel[model])
+                        perModel[model] = Format.emptyTotals();
+                    Format.addTotals(perModel[model], t);
+                }
+            }
+        }
+    } catch (e) {
+        // no cache yet
+    }
+    return Format.groupByFamily(perModel).map(g => g.family);
+}
+
+function familiesGroup(settings, provider) {
+    const group = new Adw.PreferencesGroup({
+        title: 'Model families',
+        description: 'Families listed in the summary rows and the model-share graph. ' +
+            'Totals, cost and the token graph always count all of them.',
+    });
+    const hidden = new Set(settings.get_strv(K.HIDDEN_FAMILIES));
+    const families = seenFamilies(provider);
+    for (const f of hidden) {
+        if (!families.includes(f))
+            families.push(f);
+    }
+    if (families.length === 0)
+        group.add(new Adw.ActionRow({ title: 'No usage recorded yet' }));
+    for (const family of families) {
+        const row = new Adw.ActionRow({ title: family });
+        const check = new Gtk.CheckButton({ active: !hidden.has(family), valign: Gtk.Align.CENTER });
+        check.connect('toggled', () => {
+            const now = new Set(settings.get_strv(K.HIDDEN_FAMILIES));
+            if (check.active)
+                now.delete(family);
+            else
+                now.add(family);
+            settings.set_strv(K.HIDDEN_FAMILIES, [...now]);
+        });
+        row.add_prefix(check);
+        row.activatable_widget = check;
+        group.add(row);
+    }
+    return group;
+}
+
 /* --- page assembly --- */
 
-function fillPreferencesWindow(window) {
-    const settings = Settings.getSettings();
+const PAGES = [
+    { id: 'claude', name: 'Claude', logs: 'Claude Code transcripts', bars: ['Per-model weekly bars', 'Opus / Sonnet / Fable weekly limits, when present.'] },
+    { id: 'codex', name: 'Codex', logs: 'Codex session logs', bars: ['Per-app weekly bars', 'Apps your plan is shared with (Sign in with ChatGPT).'] },
+];
+
+// One page per panel button, each bound to that button's settings.
+function providerPage(settings, provider) {
     const page = new Adw.PreferencesPage({
-        title: 'Usage', icon_name: 'utilities-system-monitor-symbolic',
+        title: provider.name, icon_name: 'utilities-system-monitor-symbolic',
     });
 
     // Panel
@@ -366,7 +436,7 @@ function fillPreferencesWindow(window) {
     // Refresh
     const refresh = new Adw.PreferencesGroup({ title: 'Refresh' });
     refresh.add(spinRow(settings, K.REFRESH_SECONDS, 'Transcript interval (s)',
-        "How often local transcripts and Codex logs are re-read.", 15, 3600, 5));
+        `How often the local ${provider.logs} are re-read.`, 15, 3600, 5));
     refresh.add(spinRow(settings, K.USAGE_REFRESH_SECONDS, 'Usage API interval (s)',
         'The usage endpoint rate-limits frequent polling; ≥120s recommended.', 60, 3600, 30));
     page.add(refresh);
@@ -376,8 +446,7 @@ function fillPreferencesWindow(window) {
         title: 'Dropdown sections', description: 'Sub-options collapse when their section is off.',
     });
     const usageExp = toggleExpander(settings, K.SHOW_USAGE_SECTION, 'Subscription usage bars');
-    usageExp.add_row(childSwitch(settings, K.SHOW_MODEL_USAGE_BARS, 'Per-model weekly bars',
-        'Opus / Sonnet weekly limits, when present.'));
+    usageExp.add_row(childSwitch(settings, K.SHOW_MODEL_USAGE_BARS, ...provider.bars));
     sections.add(usageExp);
 
     const todayExp = toggleExpander(settings, K.SHOW_TODAY_SECTION, 'Summary',
@@ -415,6 +484,8 @@ function fillPreferencesWindow(window) {
     graphs.add(switchRow(settings, K.SHOW_GRAPH_MODELS, 'Per-model token share'));
     page.add(graphs);
 
+    page.add(familiesGroup(settings, provider.id));
+
     // Order
     page.add(orderGroup(settings));
 
@@ -423,10 +494,16 @@ function fillPreferencesWindow(window) {
     appearance.add(spinRow(settings, K.BAR_WIDTH, 'Bar / graph width (px)', null, 80, 600, 10));
     appearance.add(colorRow(settings, K.ACCENT_COLOR, 'Accent color'));
     page.add(appearance);
+    return page;
+}
 
-    // Pricing
-    page.add(pricingGroup(settings));
-
-    window.add(page);
+function fillPreferencesWindow(window) {
+    for (const provider of PAGES)
+        window.add(providerPage(Settings.getSettings(provider.id), provider));
+    const pricing = new Adw.PreferencesPage({
+        title: 'Pricing', icon_name: 'accessories-calculator-symbolic',
+    });
+    pricing.add(pricingGroup(Settings.getSettings('claude')));
+    window.add(pricing);
     window.set_default_size(640, 820);
 }
