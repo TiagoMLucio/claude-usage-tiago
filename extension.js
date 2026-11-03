@@ -218,6 +218,12 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         case K.SHOW_PANEL_TEXT:
             this._applyPanelVisibility();
             break;
+        case K.PANEL_FORMAT:
+            if (this._panelNeedsCost()) {
+                this._refreshTranscripts().then(() => this._updateUi());
+                return;
+            }
+            break;
         }
         this._updateUi();
     }

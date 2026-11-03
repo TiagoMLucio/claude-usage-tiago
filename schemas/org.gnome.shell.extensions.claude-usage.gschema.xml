@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist>
-  <!-- Every key of one panel button; the two schemas below place it. -->
-  <schema id="org.gnome.shell.extensions.claude-usage.base">
+  <!-- Every key of one panel button. Relocatable: lib/settings.js opens it at
+       /org/gnome/shell/extensions/claude-usage/ (Claude) and .../codex/ (Codex).
+       An `extends` schema would emit no change signals for inherited keys. -->
+  <schema id="org.gnome.shell.extensions.claude-usage">
 
     <!-- Refresh cadence -->
     <key name="refresh-seconds" type="i">
@@ -175,15 +177,5 @@
       <summary>Model families hidden from the dropdown list</summary>
     </key>
 
-  </schema>
-
-  <schema id="org.gnome.shell.extensions.claude-usage"
-          path="/org/gnome/shell/extensions/claude-usage/"
-          extends="org.gnome.shell.extensions.claude-usage.base"/>
-
-  <schema id="org.gnome.shell.extensions.claude-usage.codex"
-          path="/org/gnome/shell/extensions/claude-usage/codex/"
-          extends="org.gnome.shell.extensions.claude-usage.base">
-    <override name="accent-color">'#10a37f'</override>
   </schema>
 </schemalist>

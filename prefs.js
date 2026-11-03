@@ -150,15 +150,30 @@ function pricingGroup(settings) {
 
     // A row keeps its 3-value form until its cached rate is edited, so saving
     // doesn't change the Claude rows the Claude cache is tagged with.
+    let written = settings.get_string(K.PRICING);
+    const write = value => {
+        written = value;
+        settings.set_string(K.PRICING, value);
+    };
     const commit = () => {
         if (models.length === 0) {
-            settings.set_string(K.PRICING, '');
+            write('');
             return;
         }
         const arr = models.map(m => (m.cached === undefined
             ? [m.key, m.input, m.output] : [m.key, m.input, m.output, m.cached]));
-        settings.set_string(K.PRICING, JSON.stringify(arr));
+        write(JSON.stringify(arr));
     };
+    // Changed elsewhere (a reset, another prefs window): reload, or the next
+    // edit here would write this stale copy back.
+    const changedId = settings.connect(`changed::${K.PRICING}`, () => {
+        if (settings.get_string(K.PRICING) === written)
+            return;
+        written = settings.get_string(K.PRICING);
+        models = Pricing.parsePricing(written).map(toModel);
+        render();
+    });
+    group.connect('destroy', () => settings.disconnect(changedId));
 
     const makeRow = (model, index) => {
         const row = new Adw.ActionRow();
@@ -257,7 +272,7 @@ function pricingGroup(settings) {
     resetBtn.connect('clicked', () => {
         models = Pricing.DEFAULT_PRICES.map(toModel);
         render();
-        settings.set_string(K.PRICING, ''); // empty => use defaults
+        write(''); // empty => use defaults
     });
     headerBox.append(resetBtn);
     headerBox.append(addBtn);
