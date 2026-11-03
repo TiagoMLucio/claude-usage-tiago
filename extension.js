@@ -1,13 +1,15 @@
-/* Claude Code Usage — GNOME Shell 42 extension (legacy, non-ESM).
+/* Claude Code & Codex Usage — GNOME Shell 42 extension (legacy, non-ESM).
  *
- * Top bar: optional Claude icon (recolorable) + configurable text. Dropdown:
- * subscription utilization bars (with a time-elapsed marker), today's tokens
- * per model, and optional Cairo graphs (daily tokens, utilization trend, model
- * share). Every visible element is toggleable from preferences.
+ * One top-bar button per provider (Claude, and Codex when ~/.codex is signed
+ * in), sharing one set of preferences. Each: optional icon (recolorable) +
+ * configurable text. Dropdown: subscription utilization bars (with a
+ * time-elapsed marker), tokens per model, and optional Cairo graphs (daily
+ * tokens, utilization trend, model share). Every visible element is toggleable
+ * from preferences.
  *
  * This file is just the indicator UI + orchestration; data sources live in
- * lib/ (usage.js, transcripts.js, history.js, graphs.js, pricing/format,
- * settings.js). */
+ * lib/ (usage.js, codexUsage.js, transcripts.js, history.js, graphs.js,
+ * pricing/format, settings.js). */
 
 const { GLib, Gio, St, Clutter, GObject, Graphene, Pango } = imports.gi;
 const ByteArray = imports.byteArray;
@@ -22,14 +24,27 @@ const Pricing = Me.imports.lib.pricing;
 const Format = Me.imports.lib.format;
 const Graphs = Me.imports.lib.graphs;
 const { UsageClient } = Me.imports.lib.usage;
+const CodexUsage = Me.imports.lib.codexUsage;
 const { TranscriptReader } = Me.imports.lib.transcripts;
 const { UtilHistory } = Me.imports.lib.history;
 
 const K = Settings.KEYS;
 const ICON_DIR = GLib.build_filenamev([GLib.get_user_state_dir(), 'claude-usage', 'icons']);
-const ICON_BASE_FILL = '#eeeeec'; // fill in claude.svg we recolor
+const ICON_BASE_FILL = '#eeeeec'; // fill in the provider svgs we recolor
 const SUB_COLOR = { r: 0.42, g: 0.55, b: 0.65 }; // subagent bars (muted slate)
 const ALL_DAYS = 36500; // cost-history-days = 0 means "all time"
+
+const PROVIDERS = [
+    {
+        id: 'claude', name: 'Claude', role: 'claude-usage', icon: 'claude.svg',
+        historyFile: 'util-history.jsonl', Client: UsageClient,
+    },
+    {
+        id: 'codex', name: 'Codex', role: 'codex-usage', icon: 'codex.svg',
+        historyFile: 'codex-util-history.jsonl', Client: CodexUsage.CodexUsageClient,
+        available: CodexUsage.available, limitsInLogs: true,
+    },
+];
 
 // Theme-neutral "dim" text: smaller font via CSS, faded via actor opacity.
 function dim(label) {
@@ -40,9 +55,10 @@ function dim(label) {
 
 const Indicator = GObject.registerClass(
 class ClaudeUsageIndicator extends PanelMenu.Button {
-    _init(settings) {
-        super._init(0.0, 'Claude Code Usage');
+    _init(settings, provider) {
+        super._init(0.0, `${provider.name} Usage`);
         this._settings = settings;
+        this._provider = provider;
 
         // --- panel button ---
         this._box = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
@@ -61,10 +77,10 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         this.add_child(this._box);
 
         // --- data sources ---
-        this._usageClient = new UsageClient();
-        this._history = new UtilHistory();
+        this._usageClient = new provider.Client();
+        this._history = new UtilHistory(provider.historyFile);
         this._history.load();
-        this._transcripts = new TranscriptReader(
+        this._transcripts = new TranscriptReader(provider.id,
             () => Pricing.parsePricing(this._settings.get_string(K.PRICING)),
             // Parse enough days for the cost graph and the selected summary period.
             () => {
@@ -72,6 +88,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 return Math.max(ch === 0 ? ALL_DAYS : ch,
                     Format.periodLookbackDays(this._settings.get_string(K.PERIOD)));
             });
+        this._pricingKey = this._transcripts.pricingKey();
 
         // --- state ---
         this._timeoutId = 0;
@@ -112,13 +129,14 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         }
     }
 
-    // Recolor claude.svg to the chosen color, write it under the state dir, and
+    // Recolor the provider's svg to the chosen color, write it under the state dir, and
     // point the panel icon at it. The filename embeds the color so St doesn't
     // serve a stale cached texture when the color changes.
     _applyIcon() {
         const color = this._iconColor();
         const slug = color.replace(/[^0-9a-zA-Z]/g, '');
-        const outPath = GLib.build_filenamev([ICON_DIR, `claude-${slug}.svg`]);
+        const svgPath = `${Me.path}/${this._provider.icon}`;
+        const outPath = GLib.build_filenamev([ICON_DIR, `${this._provider.id}-${slug}.svg`]);
         try {
             if (!Gio.File.new_for_path(outPath).query_exists(null)) {
                 try {
@@ -126,14 +144,14 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 } catch (e) {
                     // directory already exists — fine
                 }
-                const [, bytes] = GLib.file_get_contents(`${Me.path}/claude.svg`);
+                const [, bytes] = GLib.file_get_contents(svgPath);
                 const svg = ByteArray.toString(bytes).split(ICON_BASE_FILL).join(color);
                 GLib.file_set_contents(outPath, svg);
             }
             this._icon.gicon = Gio.icon_new_for_string(outPath);
         } catch (e) {
             logError(e, 'claude-usage: icon recolor failed');
-            this._icon.gicon = Gio.icon_new_for_string(`${Me.path}/claude.svg`);
+            this._icon.gicon = Gio.icon_new_for_string(svgPath);
         }
     }
 
@@ -170,11 +188,16 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         case K.REFRESH_SECONDS:
             this._startTimer();
             break;
-        case K.PRICING:
-            // Cost is baked into the cache; force a re-parse.
+        case K.PRICING: {
+            // Cost is baked into the cache; re-parse when this provider's prices changed.
+            const pricingKey = this._transcripts.pricingKey();
+            if (pricingKey === this._pricingKey)
+                return;
+            this._pricingKey = pricingKey;
             this._transcripts.invalidate();
             this._refreshTranscripts().then(() => this._updateUi());
             return;
+        }
         case K.COST_HISTORY_DAYS:
         case K.PERIOD:
             // Grow-only cache: shrinking is instant, growing re-parses only the
@@ -242,7 +265,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         try {
             await this._transcripts.refresh();
         } catch (e) {
-            logError(e, 'claude-usage: transcript refresh failed');
+            logError(e, `claude-usage: ${this._provider.id} log refresh failed`);
         }
     }
 
@@ -258,9 +281,31 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
                 this._usage = data;
                 this._lastUsageOk = Date.now() / 1000;
                 this._history.record(data);
+                this._updateUi();
+            } else if (!this._usage && this._provider.limitsInLogs) {
+                // The log fallback (_usageView) needs the cache loaded.
+                this._refreshTranscripts().then(() => this._updateUi());
+            } else {
+                this._updateUi();
             }
-            this._updateUi();
         });
+    }
+
+    // The live usage payload, else one built from the newest utilization
+    // sample in the logs (Codex logs record them), with its time: [data, t].
+    _usageView() {
+        if (this._usage)
+            return [this._usage, this._lastUsageOk];
+        const samples = this._transcripts.limitSamples();
+        const last = samples[samples.length - 1];
+        if (!last)
+            return [null, 0];
+        const now = Date.now() / 1000;
+        const bucket = (pct, reset) => (pct === null ? null : {
+            utilization: reset && reset < now ? null : pct,
+            resets_at: reset ? new Date(reset * 1000).toISOString() : null,
+        });
+        return [{ five_hour: bucket(last.five, last.fr), seven_day: bucket(last.week, last.wr) }, last.t];
     }
 
     /* --- shared helpers --- */
@@ -400,7 +445,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     /* --- panel text --- */
 
     _panelText() {
-        const u = this._usage;
+        const [u] = this._usageView();
         const five = u ? Format.pctOf(u.five_hour) : null;
         const week = u ? Format.pctOf(u.seven_day) : null;
         const fStr = five === null ? '–' : `${Math.round(five)}%`;
@@ -481,7 +526,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     }
 
     _renderUsage() {
-        const u = this._usage;
+        const [u] = this._usageView();
         if (u) {
             if (u.five_hour) {
                 this._barRow('Session (5h)',
@@ -491,6 +536,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
             this._barRow('Week',
                 `resets ${Format.fmtReset(u.seven_day?.resets_at)}`,
                 Format.pctOf(u.seven_day), this._elapsed(u.seven_day, 7 * 24 * 3600 * 1000));
+            if (typeof u.reset_credits === 'number')
+                this._twoColRow('Limit resets available', `${u.reset_credits}`);
             if (this._settings.get_boolean(K.SHOW_MODEL_USAGE_BARS))
                 this._renderModelUsageBars(u);
         } else {
@@ -621,8 +668,12 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     _renderGraphUtil() {
         const s = this._settings;
         const days = s.get_int(K.UTIL_TREND_DAYS);
+        const cutoff = days > 0 ? Math.floor(Date.now() / 1000) - days * 86400 : 0;
+        const samples = this._history.samples(days)
+            .concat(this._transcripts.limitSamples().filter(x => x.t >= cutoff))
+            .sort((a, b) => a.t - b.t);
         this._graphRow(Graphs.utilGraph({
-            samples: this._history.samples(days), days,
+            samples, days,
             color: this._accentRgb(), width: this._barWidth(), labeled: true,
             label: Settings.rangeLabel(days),
             onCycle: delta => s.set_int(K.UTIL_TREND_DAYS,
@@ -646,16 +697,19 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
         // Header: title + last-updated + refresh + settings buttons.
         const header = this._row();
+        const name = this._provider.name;
         const title = new St.Label({
-            text: this._plan ? `Claude · ${this._plan}` : 'Claude',
+            text: this._plan ? `${name} · ${this._plan}` : name,
             x_expand: true, y_align: Clutter.ActorAlign.CENTER,
         });
         title.add_style_class_name('claude-header');
         header.add_child(title);
         const updatedParts = [];
-        if (this._lastUsageOk) {
-            const t = GLib.DateTime.new_from_unix_local(Math.floor(this._lastUsageOk));
-            updatedParts.push(t.format('%H:%M'));
+        const [, usageTime] = this._usageView();
+        if (usageTime) {
+            const t = GLib.DateTime.new_from_unix_local(Math.floor(usageTime));
+            const fmt = Date.now() / 1000 - usageTime < 86400 ? '%H:%M' : '%b %d %H:%M';
+            updatedParts.push(this._usage ? t.format(fmt) : `logs ${t.format(fmt)}`);
         }
         if (this._usageState === 'ratelimited')
             updatedParts.push(s.get_string(K.STATUS_RATELIMITED));
@@ -719,13 +773,21 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 class Extension {
     enable() {
         this._settings = Settings.getSettings();
-        this._indicator = new Indicator(this._settings);
-        Main.panel.addToStatusArea('claude-usage', this._indicator);
+        this._indicators = [];
+        // Each one goes in at the same panel slot, so the last added sits leftmost.
+        for (const provider of PROVIDERS.slice().reverse()) {
+            if (provider.available && !provider.available())
+                continue;
+            const indicator = new Indicator(this._settings, provider);
+            Main.panel.addToStatusArea(provider.role, indicator);
+            this._indicators.push(indicator);
+        }
     }
 
     disable() {
-        this._indicator.destroy();
-        this._indicator = null;
+        for (const indicator of this._indicators)
+            indicator.destroy();
+        this._indicators = [];
         this._settings = null;
     }
 }

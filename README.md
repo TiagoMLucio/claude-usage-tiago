@@ -1,15 +1,19 @@
-# Claude Code Usage
+# Claude Code & Codex Usage
 
-GNOME Shell panel indicator for your Claude subscription rate‑limit utilization
-and your Claude Code token usage / estimated API‑equivalent cost.
+GNOME Shell panel indicators for your Claude and Codex subscription rate‑limit
+utilization and your Claude Code / Codex token usage and estimated
+API‑equivalent cost: one panel button per provider, sharing one set of
+preferences. The Codex button appears only when Codex is signed in
+(`~/.codex/auth.json`).
 
 <p align="center">
-  <img src="screenshot.png" alt="Claude Code Usage dropdown" width="332">
+  <img src="screenshot.png" alt="Claude Code & Codex Usage dropdown" width="332">
 </p>
 
-> **Unofficial** — not affiliated with or endorsed by Anthropic. "Claude" and
-> the Claude logo are trademarks of Anthropic, used here only to identify the
-> service the extension reports on.
+> **Unofficial**: not affiliated with or endorsed by Anthropic or OpenAI.
+> "Claude" and the Claude logo are trademarks of Anthropic, "Codex" and the
+> Codex logo of OpenAI, used here only to identify the services the extension
+> reports on.
 
 ## ⚠️ GNOME Shell 42 only
 
@@ -24,16 +28,29 @@ libsoup 3 is present. No newer‑GNOME port is provided.
 - Dropdown: utilization bars, a Day/Week/Month/Year summary with per‑model
   breakdown and cost, optional per‑project totals, and optional graphs (daily
   tokens, utilization trend, model share, 5‑hour burn‑down).
+- Codex: the weekly‑limit resets still available, and a utilization trend
+  that starts from the history in the session logs. When the usage request
+  fails, the bars fall back to the newest utilization the logs recorded.
 - Everything is toggleable and reorderable in Preferences.
+
+Codex runs started with `codex exec --ephemeral` write no session log, so
+their tokens and cost are missing from the totals (the utilization bars still
+include them). Codex cost uses OpenAI's API prices, including the long‑context
+rate above 272K input tokens; `codex-auto-review` has no published price.
 
 ## Privacy
 
-Reads locally, sends nothing but the one request below:
+Reads locally, sends nothing but the two requests below:
 
-- `~/.claude/.credentials.json` — the OAuth access token only, sent over HTTPS
+- `~/.claude/.credentials.json`: the OAuth access token only, sent over HTTPS
   to `https://api.anthropic.com/api/oauth/usage` to fetch your utilization.
-- `~/.claude/projects/**/*.jsonl` — transcripts, parsed locally for token/cost
-  totals; their contents never leave your machine.
+- `~/.codex/auth.json`: the ChatGPT access token and account id only, sent over
+  HTTPS to `https://chatgpt.com/backend-api/wham/usage` (the endpoint Codex's
+  `/status` uses) to fetch your utilization. The token is never refreshed or
+  written.
+- `~/.claude/projects/**/*.jsonl` and `~/.codex/sessions/**/*.jsonl`:
+  transcripts and session logs, parsed locally for token/cost totals; their
+  contents never leave your machine.
 
 No telemetry, no other network access.
 

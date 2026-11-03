@@ -8,7 +8,7 @@
       <default>60</default>
       <range min="15" max="3600"/>
       <summary>Transcript refresh interval (seconds)</summary>
-      <description>How often local ~/.claude transcripts are re-parsed for tokens and cost.</description>
+      <description>How often local ~/.claude transcripts and ~/.codex session logs are re-parsed for tokens and cost.</description>
     </key>
     <key name="usage-refresh-seconds" type="i">
       <default>300</default>
@@ -20,7 +20,7 @@
     <!-- Panel (top bar) -->
     <key name="show-icon" type="b">
       <default>true</default>
-      <summary>Show the Claude icon in the panel</summary>
+      <summary>Show the provider icon on each panel button</summary>
     </key>
     <key name="icon-color" type="s">
       <choices>

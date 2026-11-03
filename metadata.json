@@ -1,8 +1,8 @@
 {
   "uuid": "claude-usage@tiago",
-  "name": "Claude Code Usage",
-  "description": "Shows Claude subscription rate-limit utilization plus today's Claude Code token usage and estimated API-equivalent cost, parsed from ~/.claude transcripts. Configurable via preferences.",
+  "name": "Claude Code & Codex Usage",
+  "description": "Shows Claude and Codex subscription rate-limit utilization plus Claude Code and Codex token usage and estimated API-equivalent cost, parsed from ~/.claude transcripts and ~/.codex session logs. One panel button per provider; configurable via preferences.",
   "shell-version": ["42"],
   "settings-schema": "org.gnome.shell.extensions.claude-usage",
-  "version": 18
+  "version": 19
 }

@@ -1,4 +1,5 @@
-/* Preferences UI (GTK4 + libadwaita) for Claude Code Usage.
+/* Preferences UI (GTK4 + libadwaita) for Claude Code & Codex Usage. Both panel
+ * buttons share these settings.
  *
  * Widgets bind to GSettings so changes apply live in the running shell.
  * Dependent options are nested in Adw.ExpanderRows whose enable-switch is the
@@ -136,20 +137,25 @@ function pricingGroup(settings) {
     const group = new Adw.PreferencesGroup({
         title: 'Pricing',
         description: 'Rates used for the API-equivalent cost estimate, in $ per ' +
-            'million tokens. Model name is matched as a substring of the model id.',
+            'million tokens. Model name is matched as a substring of the model id, ' +
+            'first match wins. Cached input defaults to 10% of input.',
     });
 
-    // Working copy: [{ key, input, output }]. Seeded from settings (defaults if empty).
-    let models = Pricing.parsePricing(settings.get_string(K.PRICING))
-        .map(([key, input, output]) => ({ key, input, output }));
+    // Working copy: [{ key, input, output, cached }], cached undefined = 10% of
+    // input. Seeded from settings (defaults if empty).
+    const toModel = ([key, input, output, cached]) => ({ key, input, output, cached });
+    let models = Pricing.parsePricing(settings.get_string(K.PRICING)).map(toModel);
     let rows = [];
 
+    // A row keeps its 3-value form until its cached rate is edited, so saving
+    // doesn't change the Claude rows the Claude cache is tagged with.
     const commit = () => {
         if (models.length === 0) {
             settings.set_string(K.PRICING, '');
             return;
         }
-        const arr = models.map(m => [m.key, m.input, m.output]);
+        const arr = models.map(m => (m.cached === undefined
+            ? [m.key, m.input, m.output] : [m.key, m.input, m.output, m.cached]));
         settings.set_string(K.PRICING, JSON.stringify(arr));
     };
 
@@ -163,11 +169,11 @@ function pricingGroup(settings) {
         name.connect('changed', () => { model.key = name.get_text(); commit(); });
         row.add_prefix(name);
 
-        const mkSpin = (val, tip) => {
+        const mkSpin = (val, tip, step = 0.5) => {
             const spin = new Gtk.SpinButton({
                 valign: Gtk.Align.CENTER, digits: 2, tooltip_text: tip,
                 adjustment: new Gtk.Adjustment({
-                    lower: 0, upper: 1000, step_increment: 0.5, page_increment: 5,
+                    lower: 0, upper: 1000, step_increment: step, page_increment: step * 10,
                 }),
             });
             spin.set_value(val);
@@ -175,10 +181,28 @@ function pricingGroup(settings) {
         };
         const inSpin = mkSpin(model.input, 'Input $/MTok');
         const outSpin = mkSpin(model.output, 'Output $/MTok');
-        inSpin.connect('value-changed', () => { model.input = inSpin.get_value(); commit(); });
+        const cachedSpin = mkSpin(model.cached ?? model.input * 0.1, 'Cached input $/MTok', 0.01);
+        let syncing = false;
+        inSpin.connect('value-changed', () => {
+            model.input = inSpin.get_value();
+            if (model.cached === undefined) {
+                syncing = true;
+                cachedSpin.set_value(model.input * 0.1);
+                syncing = false;
+            }
+            commit();
+        });
         outSpin.connect('value-changed', () => { model.output = outSpin.get_value(); commit(); });
+        cachedSpin.connect('value-changed', () => {
+            if (syncing)
+                return;
+            model.cached = cachedSpin.get_value();
+            commit();
+        });
         row.add_suffix(new Gtk.Label({ label: 'in', css_classes: ['dim-label'] }));
         row.add_suffix(inSpin);
+        row.add_suffix(new Gtk.Label({ label: 'cached', css_classes: ['dim-label'] }));
+        row.add_suffix(cachedSpin);
         row.add_suffix(new Gtk.Label({ label: 'out', css_classes: ['dim-label'] }));
         row.add_suffix(outSpin);
 
@@ -224,7 +248,7 @@ function pricingGroup(settings) {
         valign: Gtk.Align.CENTER, tooltip_text: 'Reset to built-in defaults',
     });
     resetBtn.connect('clicked', () => {
-        models = Pricing.DEFAULT_PRICES.map(([key, input, output]) => ({ key, input, output }));
+        models = Pricing.DEFAULT_PRICES.map(toModel);
         render();
         settings.set_string(K.PRICING, ''); // empty => use defaults
     });
@@ -321,7 +345,7 @@ function orderGroup(settings) {
 function fillPreferencesWindow(window) {
     const settings = Settings.getSettings();
     const page = new Adw.PreferencesPage({
-        title: 'Claude Usage', icon_name: 'utilities-system-monitor-symbolic',
+        title: 'Usage', icon_name: 'utilities-system-monitor-symbolic',
     });
 
     // Panel
@@ -342,7 +366,7 @@ function fillPreferencesWindow(window) {
     // Refresh
     const refresh = new Adw.PreferencesGroup({ title: 'Refresh' });
     refresh.add(spinRow(settings, K.REFRESH_SECONDS, 'Transcript interval (s)',
-        "How often local transcripts are re-read.", 15, 3600, 5));
+        "How often local transcripts and Codex logs are re-read.", 15, 3600, 5));
     refresh.add(spinRow(settings, K.USAGE_REFRESH_SECONDS, 'Usage API interval (s)',
         'The usage endpoint rate-limits frequent polling; ≥120s recommended.', 60, 3600, 30));
     page.add(refresh);
@@ -364,7 +388,7 @@ function fillPreferencesWindow(window) {
     todayExp.add_row(childSwitch(settings, K.SHOW_COST, 'Estimated cost'));
     sections.add(todayExp);
     const projectsExp = toggleExpander(settings, K.SHOW_PROJECTS_SECTION, 'Per-project breakdown',
-        'Tokens grouped by ~/.claude project for the selected period.');
+        'Tokens grouped by project (working directory) for the selected period.');
     projectsExp.add_row(childSpin(settings, K.PROJECTS_MAX, 'Max projects shown', null, 1, 50, 1));
     sections.add(projectsExp);
     page.add(sections);
@@ -404,5 +428,5 @@ function fillPreferencesWindow(window) {
     page.add(pricingGroup(settings));
 
     window.add(page);
-    window.set_default_size(560, 820);
+    window.set_default_size(640, 820);
 }
