@@ -443,7 +443,7 @@ const PAGES = [
 // One page per panel button, each bound to that button's settings.
 function providerPage(settings, provider) {
     const page = new Adw.PreferencesPage({
-        title: provider.name, icon_name: 'utilities-system-monitor-symbolic',
+        title: provider.name, icon_name: `claude-usage-${provider.id}-symbolic`,
     });
 
     // Panel
@@ -526,6 +526,9 @@ function providerPage(settings, provider) {
 }
 
 function fillPreferencesWindow(window) {
+    // The tab icons (the panel logos) live in icons/hicolor/, a theme dir GTK recolors.
+    Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
+        .add_search_path(GLib.build_filenamev([Me.path, 'icons']));
     for (const provider of PAGES)
         window.add(providerPage(Settings.getSettings(provider.id), provider));
     const pricing = new Adw.PreferencesPage({
