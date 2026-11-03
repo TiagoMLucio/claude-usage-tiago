@@ -137,14 +137,29 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     /* --- settings reactions --- */
 
     _startTimer() {
-        if (this._timeoutId)
-            GLib.source_remove(this._timeoutId);
+        this._stopTimer();
         const seconds = this._settings.get_int(K.REFRESH_SECONDS);
+        this._lastTick = GLib.get_monotonic_time();
         this._timeoutId = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT, seconds, () => {
+                this._lastTick = GLib.get_monotonic_time();
                 this._refresh();
                 return GLib.SOURCE_CONTINUE;
             });
+    }
+
+    // GJS 1.72 can drop a callback during GC with an undefined return value,
+    // which may remove the source; its id is then stale.
+    _stopTimer() {
+        if (this._timeoutId && GLib.MainContext.default().find_source_by_id(this._timeoutId))
+            GLib.source_remove(this._timeoutId);
+        this._timeoutId = 0;
+    }
+
+    _ensureTimer() {
+        const seconds = this._settings.get_int(K.REFRESH_SECONDS);
+        if (GLib.get_monotonic_time() - this._lastTick > 2 * seconds * 1000000)
+            this._startTimer();
     }
 
     _onSettingChanged(key) {
@@ -212,9 +227,12 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
 
     // Pull fresh data when the user opens the menu, then rebuild it.
     _onMenuOpen() {
+        this._ensureTimer();
         this._lastTranscriptRefresh = Date.now() / 1000;
+        // Starting the refresh first loads the saved cache synchronously.
+        const refreshed = this._refreshTranscripts();
         this._updateUi(); // show immediately with whatever is cached
-        this._refreshTranscripts().then(() => this._updateUi());
+        refreshed.then(() => this._updateUi());
     }
 
     async _refreshTranscripts() {
@@ -637,10 +655,8 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
             this.menu.disconnect(this._openStateId);
             this._openStateId = 0;
         }
-        if (this._timeoutId) {
-            GLib.source_remove(this._timeoutId);
-            this._timeoutId = 0;
-        }
+        this._stopTimer();
+        this._transcripts.destroy();
         if (this._usageClient) {
             this._usageClient.destroy();
             this._usageClient = null;
