@@ -362,6 +362,7 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         const costStr = `$${total.cost.toFixed(2)}`;
 
         const haveUsage = five !== null || week !== null;
+        const fiveWeek = five === null ? wStr : `${fStr} · ${wStr}`;
         const ph = this._statusGlyph();
         const format = this._settings.get_string(K.PANEL_FORMAT);
 
@@ -369,14 +370,14 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
         case 'cost':
             return costStr;
         case 'five':
-            return haveUsage ? fStr : ph;
+            return haveUsage ? (five === null ? wStr : fStr) : ph;
         case 'week':
             return haveUsage ? wStr : ph;
         case 'five-week-cost':
-            return haveUsage ? `${fStr} · ${wStr} · ${costStr}` : `${ph} · ${costStr}`;
+            return haveUsage ? `${fiveWeek} · ${costStr}` : `${ph} · ${costStr}`;
         case 'five-week':
         default:
-            return haveUsage ? `${fStr} · ${wStr}` : ph;
+            return haveUsage ? fiveWeek : ph;
         }
     }
 
@@ -434,9 +435,11 @@ class ClaudeUsageIndicator extends PanelMenu.Button {
     _renderUsage() {
         const u = this._usage;
         if (u) {
-            this._barRow('Session (5h)',
-                `resets ${Format.fmtReset(u.five_hour?.resets_at)}`,
-                Format.pctOf(u.five_hour), this._elapsed(u.five_hour, 5 * 3600 * 1000));
+            if (u.five_hour) {
+                this._barRow('Session (5h)',
+                    `resets ${Format.fmtReset(u.five_hour.resets_at)}`,
+                    Format.pctOf(u.five_hour), this._elapsed(u.five_hour, 5 * 3600 * 1000));
+            }
             this._barRow('Week',
                 `resets ${Format.fmtReset(u.seven_day?.resets_at)}`,
                 Format.pctOf(u.seven_day), this._elapsed(u.seven_day, 7 * 24 * 3600 * 1000));
